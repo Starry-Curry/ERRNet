@@ -324,6 +324,7 @@ class UnifiedReflectionDataset(Dataset):
         return {
             "input": input_tensor,
             "target": target_tensor,
+            "reflection": (input_tensor - target_tensor).clamp(0.0, 1.0),
             "mask": mask,
             "name": input_path.stem,
             "dataset": self.dataset,
@@ -333,4 +334,3 @@ class UnifiedReflectionDataset(Dataset):
         if self.dataset == "voc":
             return self._load_voc_sample(index)
         return self._load_pair_sample(index)
-
