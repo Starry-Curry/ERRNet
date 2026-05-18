@@ -1,0 +1,50 @@
+model:
+  use_prior_head: true
+  use_gated_blocks: true
+  use_refinement: true
+  freeze_backbone: false
+  pretrained_errnet_path: null
+  residual_scale: 0.1
+
+data:
+  data_root: ./data
+  crop_size: 224
+  image_size: null
+  num_workers: 0
+
+train:
+  epochs: 100
+  batch_size: 8
+  lr: 1.0e-4
+  optimizer: adam
+  seed: 42
+
+loss:
+  lambda_pix: 1.0
+  lambda_perc: 0.0
+  lambda_grad: 0.1
+  lambda_ssim: 0.2
+  lambda_mask: 0.05
+  lambda_clean: 0.05
+  lambda_excl: 0.0
+  lambda_reflection_weight: 2.0
+
+synthesis:
+  beta_min: 0.15
+  beta_max: 0.75
+  kappa_min: 0.0
+  kappa_max: 0.25
+  sigma1_min: 1.0
+  sigma1_max: 5.0
+  sigma2_min: 5.0
+  sigma2_max: 15.0
+  alpha2_min: 0.0
+  alpha2_max: 0.35
+  shift_min: -8
+  shift_max: 8
+  noise_std: 0.005
+
+eval:
+  lmse_window: 20
+  lmse_stride: 10
+  data_range: 1.0

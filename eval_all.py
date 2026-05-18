@@ -1,0 +1,232 @@
+"""Evaluate ERRNet/RAP-ERRNet on all configured reflection datasets."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import warnings
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Optional
+
+
+DEFAULT_DATASETS = "ceilnet,zhang20,sir2_objects,sir2_postcard,sir2_wild,self,openrr_val"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Evaluate ERRNet or RAP-ERRNet on multiple datasets.")
+    parser.add_argument("--model", choices=["errnet", "rap_errnet"], default="rap_errnet")
+    parser.add_argument("--ckpt", required=True, help="checkpoint path")
+    parser.add_argument("--data_root", default="./data")
+    parser.add_argument("--save_dir", default="results/rap_errnet_eval")
+    parser.add_argument("--datasets", default=DEFAULT_DATASETS, help="comma-separated dataset names")
+    parser.add_argument("--save_images", action="store_true")
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    return parser.parse_args()
+
+
+def choose_device(name: str) -> torch.device:
+    import torch
+
+    if name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available.")
+    return torch.device(name)
+
+
+def _load_checkpoint(path: Path, map_location) -> Dict[str, Any]:
+    import torch
+
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _filter_compatible(state: Mapping[str, Any], model) -> Dict[str, Any]:
+    current = model.state_dict()
+    return {key: value for key, value in state.items() if key in current and tuple(value.shape) == tuple(current[key].shape)}
+
+
+def load_model(model_name: str, ckpt_path: Path, device):
+    import torch
+    from torch import nn
+
+    from models import arch
+    from models.rap_errnet import RAPERRNet
+
+    class ERRNetEvalWrapper(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.net = arch.errnet(3, 3)
+
+        def forward(self, x):
+            output = self.net(x).clamp(0.0, 1.0)
+            return {
+                "output": output,
+                "coarse": output,
+                "prior": torch.zeros((x.shape[0], 1, x.shape[2], x.shape[3]), dtype=x.dtype, device=x.device),
+                "residual": torch.zeros_like(output),
+            }
+
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+    checkpoint = _load_checkpoint(ckpt_path, map_location=device)
+
+    if model_name == "rap_errnet":
+        model: nn.Module = RAPERRNet()
+        state = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
+        compatible = _filter_compatible(state, model)
+        skipped = len(state) - len(compatible)
+        if skipped:
+            warnings.warn(f"Skipped {skipped} incompatible RAP-ERRNet checkpoint tensors.", RuntimeWarning)
+        if not compatible:
+            raise ValueError(f"No compatible RAP-ERRNet tensors were found in {ckpt_path}.")
+        model.load_state_dict(compatible, strict=False)
+    else:
+        model = ERRNetEvalWrapper()
+        state = checkpoint.get("icnn", checkpoint.get("model", checkpoint.get("state_dict", checkpoint)))
+        compatible = _filter_compatible(state, model.net)
+        skipped = len(state) - len(compatible)
+        if skipped:
+            warnings.warn(
+                f"Skipped {skipped} incompatible ERRNet tensors. Hypercolumn ERRNet checkpoints should still be "
+                "evaluated with the original test_errnet.py unless local VGG feature support is added.",
+                RuntimeWarning,
+            )
+        if not compatible:
+            raise ValueError(f"No compatible ERRNet tensors were found in {ckpt_path}.")
+        model.net.load_state_dict(compatible, strict=False)
+    model.to(device)
+    model.eval()
+    return model
+
+
+def _tensor_to_rgb(tensor):
+    import numpy as np
+
+    arr = tensor.detach().cpu().float().clamp(0.0, 1.0)
+    if arr.ndim == 4:
+        arr = arr[0]
+    if arr.shape[0] == 1:
+        arr = arr.repeat(3, 1, 1)
+    arr = arr.permute(1, 2, 0).numpy()
+    return (arr * 255.0).round().astype(np.uint8)
+
+
+def _center_crop_array(arr, size: tuple[int, int]):
+    h, w = size
+    top = max((arr.shape[0] - h) // 2, 0)
+    left = max((arr.shape[1] - w) // 2, 0)
+    return arr[top : top + h, left : left + w]
+
+
+def save_visualization(
+    save_path: Path,
+    input_tensor,
+    output_tensor,
+    target_tensor,
+    prior_tensor: Optional[Any],
+) -> None:
+    import numpy as np
+    from PIL import Image
+
+    input_img = _tensor_to_rgb(input_tensor)
+    output_img = _tensor_to_rgb(output_tensor)
+    target_img = _tensor_to_rgb(target_tensor)
+    h = min(input_img.shape[0], output_img.shape[0], target_img.shape[0])
+    w = min(input_img.shape[1], output_img.shape[1], target_img.shape[1])
+    input_img = _center_crop_array(input_img, (h, w))
+    output_img = _center_crop_array(output_img, (h, w))
+    target_img = _center_crop_array(target_img, (h, w))
+    error = np.abs(output_img.astype(np.float32) - target_img.astype(np.float32)).mean(axis=2)
+    error = np.clip(error / max(error.max(), 1.0), 0.0, 1.0)
+    error_rgb = np.stack([error, np.zeros_like(error), 1.0 - error], axis=2)
+    error_rgb = (error_rgb * 255.0).astype(np.uint8)
+    if prior_tensor is None:
+        prior_rgb = np.zeros_like(input_img)
+    else:
+        prior = _tensor_to_rgb(prior_tensor)
+        prior_rgb = _center_crop_array(prior, (h, w))
+    canvas = np.concatenate([input_img, output_img, target_img, error_rgb, prior_rgb], axis=1)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(canvas).save(save_path)
+
+
+def _save_output_image(save_path: Path, output_tensor) -> None:
+    from PIL import Image
+
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(_tensor_to_rgb(output_tensor)).save(save_path)
+
+
+def evaluate_dataset(
+    model,
+    dataset_name: str,
+    data_root: Path,
+    save_dir: Path,
+    device,
+    save_images: bool,
+) -> List[Dict[str, Any]]:
+    import torch
+    from torch.utils.data import DataLoader
+
+    from datasets.unified_reflection_dataset import UnifiedReflectionDataset
+    from metrics.reflection_metrics import compute_metrics, save_metrics_csv
+
+    try:
+        dataset = UnifiedReflectionDataset(data_root, dataset_name, crop_size=None, image_size=None)
+    except FileNotFoundError as exc:
+        warnings.warn(f"Skipping {dataset_name}: {exc}", RuntimeWarning)
+        return []
+
+    loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
+    rows: List[Dict[str, Any]] = []
+    for batch in loader:
+        input_tensor = batch["input"].to(device)
+        target_tensor = batch["target"].to(device)
+        name = batch["name"][0] if isinstance(batch["name"], (list, tuple)) else str(batch["name"])
+        with torch.no_grad():
+            outputs = model(input_tensor)
+        output = outputs["output"].clamp(0.0, 1.0)
+        metric_values = compute_metrics(output[0], target_tensor[0])
+        row = {"dataset": dataset_name, "name": name, **metric_values}
+        rows.append(row)
+
+        if save_images:
+            _save_output_image(save_dir / "outputs" / dataset_name / f"{name}.png", output[0])
+            save_visualization(
+                save_dir / "visualizations" / dataset_name / f"{name}.png",
+                input_tensor[0],
+                output[0],
+                target_tensor[0],
+                outputs.get("prior", None)[0] if outputs.get("prior", None) is not None else None,
+            )
+
+    save_metrics_csv(rows, save_dir / f"metrics_{dataset_name}.csv")
+    return rows
+
+
+def main() -> None:
+    args = parse_args()
+    from metrics.reflection_metrics import save_metrics_csv
+
+    device = choose_device(args.device)
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    model = load_model(args.model, Path(args.ckpt), device)
+
+    all_rows: List[Dict[str, Any]] = []
+    dataset_names = [item.strip() for item in args.datasets.split(",") if item.strip()]
+    for dataset_name in dataset_names:
+        rows = evaluate_dataset(model, dataset_name, Path(args.data_root), save_dir, device, args.save_images)
+        all_rows.extend(rows)
+
+    if all_rows:
+        save_metrics_csv(all_rows, save_dir / "metrics_all.csv")
+    else:
+        warnings.warn("No datasets were evaluated. Check --data_root and --datasets.", RuntimeWarning)
+
+
+if __name__ == "__main__":
+    main()
