@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import csv
 import random
+import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
@@ -42,6 +44,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="training device")
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--log_interval", type=int, default=50, help="batches between training progress prints")
+    parser.add_argument("--progress_bar", action="store_true", help="show an in-place dynamic epoch progress bar")
+    parser.add_argument("--progress_interval", type=float, default=1.0, help="seconds between progress bar refreshes")
     parser.add_argument("--debug", action="store_true", help="run only a few iterations per epoch")
     return parser.parse_args()
 
@@ -196,6 +200,46 @@ def append_log(path: Path, row: Mapping[str, Any]) -> None:
         writer.writerow(row)
 
 
+def _format_seconds(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes:d}m{seconds:02d}s"
+    return f"{seconds:d}s"
+
+
+def _progress_line(
+    *,
+    epoch: int,
+    epochs: int,
+    batch_idx: int,
+    total_batches: int,
+    running: Mapping[str, float],
+    steps: int,
+    current_total: float,
+    epoch_start_time: float,
+    width: int = 28,
+) -> str:
+    progress = batch_idx / max(total_batches, 1)
+    filled = min(width, int(round(width * progress)))
+    bar = "#" * filled + "." * (width - filled)
+    elapsed = time.time() - epoch_start_time
+    rate = batch_idx / elapsed if elapsed > 0 else 0.0
+    eta = (total_batches - batch_idx) / rate if rate > 0 else 0.0
+    avg_total = running["total"] / max(steps, 1)
+    avg_pix = running["pix"] / max(steps, 1)
+    avg_grad = running["grad"] / max(steps, 1)
+    return (
+        f"epoch {epoch + 1}/{epochs} [{bar}] {batch_idx}/{total_batches} "
+        f"{progress * 100:5.1f}% eta={_format_seconds(eta)} "
+        f"avg_total={avg_total:.5f} avg_pix={avg_pix:.5f} "
+        f"avg_grad={avg_grad:.5f} cur={current_total:.5f}"
+    )
+
+
 def main() -> None:
     args = parse_args()
 
@@ -242,6 +286,8 @@ def main() -> None:
         model.train()
         running = {"total": 0.0, "pix": 0.0, "perc": 0.0, "grad": 0.0, "ssim": 0.0, "mask": 0.0, "clean": 0.0, "excl": 0.0}
         steps = 0
+        epoch_start_time = time.time()
+        last_progress_time = 0.0
         print(f"[i] epoch {epoch + 1}/{epochs} started")
         for batch_idx, batch in enumerate(loader, start=1):
             batch = move_batch_to_device(batch, device)
@@ -252,20 +298,41 @@ def main() -> None:
             optimizer.step()
 
             steps += 1
+            current_total = float(losses["total"].detach().cpu())
             for key in running:
                 running[key] += float(losses[key].detach().cpu())
-            if args.log_interval > 0 and (batch_idx % args.log_interval == 0 or batch_idx == len(loader)):
+            should_finish_progress = batch_idx == len(loader) or (args.debug and steps >= 3)
+            if args.progress_bar and (
+                time.time() - last_progress_time >= args.progress_interval or should_finish_progress
+            ):
+                line = _progress_line(
+                    epoch=epoch,
+                    epochs=epochs,
+                    batch_idx=batch_idx,
+                    total_batches=len(loader),
+                    running=running,
+                    steps=steps,
+                    current_total=current_total,
+                    epoch_start_time=epoch_start_time,
+                )
+                sys.stdout.write("\r" + line + " " * 8)
+                sys.stdout.flush()
+                last_progress_time = time.time()
+            elif args.log_interval > 0 and (batch_idx % args.log_interval == 0 or batch_idx == len(loader)):
                 avg_total = running["total"] / steps
                 avg_pix = running["pix"] / steps
                 avg_grad = running["grad"] / steps
                 print(
                     f"epoch={epoch + 1}/{epochs} batch={batch_idx}/{len(loader)} "
                     f"avg_total={avg_total:.6f} avg_pix={avg_pix:.6f} "
-                    f"avg_grad={avg_grad:.6f} current_total={float(losses['total'].detach().cpu()):.6f}",
+                    f"avg_grad={avg_grad:.6f} current_total={current_total:.6f}",
                     flush=True,
                 )
             if args.debug and steps >= 3:
                 break
+        if args.progress_bar:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
         if steps == 0:
             raise RuntimeError("Training dataloader produced zero batches.")
