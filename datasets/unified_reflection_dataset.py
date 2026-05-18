@@ -7,7 +7,6 @@ does not download or prepare any data. Missing datasets raise clear
 
 from __future__ import annotations
 
-import warnings
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -280,6 +279,13 @@ class UnifiedReflectionDataset(Dataset):
             if self.pairs:
                 self.pairs = self.pairs[: int(max_pairs)]
 
+        missing_masks = sum(1 for _, _, mask_path in self.pairs if mask_path is None)
+        if missing_masks:
+            print(
+                f"[i] {self.dataset}: {missing_masks}/{len(self.pairs)} pairs have no mask; "
+                "using abs(input-target) pseudo masks."
+            )
+
     def __len__(self) -> int:
         return len(self.voc_images) if self.dataset == "voc" else len(self.pairs)
 
@@ -316,10 +322,6 @@ class UnifiedReflectionDataset(Dataset):
             mask_img = _center_crop(mask_img, self.crop_size)
             mask = _to_mask_tensor(mask_img)
         else:
-            warnings.warn(
-                f"No mask found for {input_path.name}; using abs(input-target) pseudo mask.",
-                RuntimeWarning,
-            )
             mask = _pseudo_mask(input_tensor, target_tensor)
         return {
             "input": input_tensor,

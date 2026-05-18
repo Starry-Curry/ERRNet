@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_openrr_pairs", type=int, default=None, help="limit OpenRR training pairs")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="training device")
     parser.add_argument("--num_workers", type=int, default=None)
+    parser.add_argument("--log_interval", type=int, default=50, help="batches between training progress prints")
     parser.add_argument("--debug", action="store_true", help="run only a few iterations per epoch")
     return parser.parse_args()
 
@@ -215,6 +216,10 @@ def main() -> None:
     batch_size = int(args.batch_size or train_cfg.get("batch_size", 8))
     num_workers = int(args.num_workers if args.num_workers is not None else data_cfg.get("num_workers", 0))
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=device.type == "cuda")
+    print(
+        f"[i] training samples={len(dataset)} batches_per_epoch={len(loader)} "
+        f"batch_size={batch_size} device={device}"
+    )
 
     model = build_model(args, cfg).to(device)
     criterion = ReflectionRemovalLoss(cfg)
@@ -237,7 +242,8 @@ def main() -> None:
         model.train()
         running = {"total": 0.0, "pix": 0.0, "perc": 0.0, "grad": 0.0, "ssim": 0.0, "mask": 0.0, "clean": 0.0, "excl": 0.0}
         steps = 0
-        for batch in loader:
+        print(f"[i] epoch {epoch + 1}/{epochs} started")
+        for batch_idx, batch in enumerate(loader, start=1):
             batch = move_batch_to_device(batch, device)
             outputs = model(batch["input"])
             losses = criterion(outputs, batch)
@@ -248,6 +254,16 @@ def main() -> None:
             steps += 1
             for key in running:
                 running[key] += float(losses[key].detach().cpu())
+            if args.log_interval > 0 and (batch_idx % args.log_interval == 0 or batch_idx == len(loader)):
+                avg_total = running["total"] / steps
+                avg_pix = running["pix"] / steps
+                avg_grad = running["grad"] / steps
+                print(
+                    f"epoch={epoch + 1}/{epochs} batch={batch_idx}/{len(loader)} "
+                    f"avg_total={avg_total:.6f} avg_pix={avg_pix:.6f} "
+                    f"avg_grad={avg_grad:.6f} current_total={float(losses['total'].detach().cpu()):.6f}",
+                    flush=True,
+                )
             if args.debug and steps >= 3:
                 break
 
