@@ -221,7 +221,7 @@ def _progress_line(
     steps: int,
     current_total: float,
     epoch_start_time: float,
-    width: int = 28,
+    width: int = 20,
 ) -> str:
     progress = batch_idx / max(total_batches, 1)
     filled = min(width, int(round(width * progress)))
@@ -233,10 +233,9 @@ def _progress_line(
     avg_pix = running["pix"] / max(steps, 1)
     avg_grad = running["grad"] / max(steps, 1)
     return (
-        f"epoch {epoch + 1}/{epochs} [{bar}] {batch_idx}/{total_batches} "
-        f"{progress * 100:5.1f}% eta={_format_seconds(eta)} "
-        f"avg_total={avg_total:.5f} avg_pix={avg_pix:.5f} "
-        f"avg_grad={avg_grad:.5f} cur={current_total:.5f}"
+        f"ep {epoch + 1}/{epochs} [{bar}] {batch_idx}/{total_batches} "
+        f"{progress * 100:4.1f}% eta { _format_seconds(eta)} "
+        f"loss {avg_total:.4f} pix {avg_pix:.4f} grad {avg_grad:.4f} cur {current_total:.4f}"
     )
 
 
@@ -302,32 +301,32 @@ def main() -> None:
             for key in running:
                 running[key] += float(losses[key].detach().cpu())
             should_finish_progress = batch_idx == len(loader) or (args.debug and steps >= 3)
-            if args.progress_bar and (
-                time.time() - last_progress_time >= args.progress_interval or should_finish_progress
-            ):
-                line = _progress_line(
-                    epoch=epoch,
-                    epochs=epochs,
-                    batch_idx=batch_idx,
-                    total_batches=len(loader),
-                    running=running,
-                    steps=steps,
-                    current_total=current_total,
-                    epoch_start_time=epoch_start_time,
-                )
-                sys.stdout.write("\r" + line + " " * 8)
-                sys.stdout.flush()
-                last_progress_time = time.time()
-            elif args.log_interval > 0 and (batch_idx % args.log_interval == 0 or batch_idx == len(loader)):
-                avg_total = running["total"] / steps
-                avg_pix = running["pix"] / steps
-                avg_grad = running["grad"] / steps
-                print(
-                    f"epoch={epoch + 1}/{epochs} batch={batch_idx}/{len(loader)} "
-                    f"avg_total={avg_total:.6f} avg_pix={avg_pix:.6f} "
-                    f"avg_grad={avg_grad:.6f} current_total={current_total:.6f}",
-                    flush=True,
-                )
+            if args.progress_bar:
+                if time.time() - last_progress_time >= args.progress_interval or should_finish_progress:
+                    line = _progress_line(
+                        epoch=epoch,
+                        epochs=epochs,
+                        batch_idx=batch_idx,
+                        total_batches=len(loader),
+                        running=running,
+                        steps=steps,
+                        current_total=current_total,
+                        epoch_start_time=epoch_start_time,
+                    )
+                    sys.stdout.write("\r" + line + " " * 12)
+                    sys.stdout.flush()
+                    last_progress_time = time.time()
+            else:
+                if args.log_interval > 0 and (batch_idx % args.log_interval == 0 or batch_idx == len(loader)):
+                    avg_total = running["total"] / steps
+                    avg_pix = running["pix"] / steps
+                    avg_grad = running["grad"] / steps
+                    print(
+                        f"epoch={epoch + 1}/{epochs} batch={batch_idx}/{len(loader)} "
+                        f"avg_total={avg_total:.6f} avg_pix={avg_pix:.6f} "
+                        f"avg_grad={avg_grad:.6f} current_total={current_total:.6f}",
+                        flush=True,
+                    )
             if args.debug and steps >= 3:
                 break
         if args.progress_bar:
