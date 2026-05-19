@@ -130,18 +130,61 @@ def _pseudo_mask(input_tensor: torch.Tensor, target_tensor: torch.Tensor) -> tor
     return ((diff - min_val) / (max_val - min_val).clamp_min(1e-6)).clamp(0.0, 1.0)
 
 
+def _canonical_pair_key(path: Path) -> str:
+    stem = path.stem.lower()
+    suffixes = (
+        "_blended",
+        "-blended",
+        "_input",
+        "-input",
+        "_mixed",
+        "-mixed",
+        "_reflection",
+        "-reflection",
+        "_transmission_layer",
+        "-transmission_layer",
+        "_transmission",
+        "-transmission",
+        "_background",
+        "-background",
+        "_target",
+        "-target",
+        "_clean",
+        "-clean",
+        "_gt",
+        "-gt",
+        "_mask",
+        "-mask",
+    )
+    changed = True
+    while changed:
+        changed = False
+        for suffix in suffixes:
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                changed = True
+    return stem
+
+
+def _index_by_pair_key(paths: Iterable[Path]) -> Dict[str, Path]:
+    index: Dict[str, Path] = {}
+    for path in paths:
+        index.setdefault(path.name.lower(), path)
+        index.setdefault(path.stem.lower(), path)
+        index.setdefault(_canonical_pair_key(path), path)
+    return index
+
+
 def _match_pairs(input_dir: Path, target_dir: Path, mask_dir: Optional[Path] = None) -> List[Tuple[Path, Path, Optional[Path]]]:
     inputs = _list_images(input_dir)
-    targets_by_name = {p.name: p for p in _list_images(target_dir)}
-    masks_by_name = {p.name: p for p in _list_images(mask_dir)} if mask_dir is not None else {}
+    targets_by_name = _index_by_pair_key(_list_images(target_dir))
+    masks_by_name = _index_by_pair_key(_list_images(mask_dir)) if mask_dir is not None else {}
     pairs = []
     for input_path in inputs:
-        target_path = targets_by_name.get(input_path.name)
-        if target_path is None:
-            stem_matches = [p for p in targets_by_name.values() if p.stem == input_path.stem]
-            target_path = stem_matches[0] if stem_matches else None
+        lookup_keys = (input_path.name.lower(), input_path.stem.lower(), _canonical_pair_key(input_path))
+        target_path = next((targets_by_name[key] for key in lookup_keys if key in targets_by_name), None)
         if target_path is not None:
-            mask_path = masks_by_name.get(input_path.name)
+            mask_path = next((masks_by_name[key] for key in lookup_keys if key in masks_by_name), None)
             pairs.append((input_path, target_path, mask_path))
     return pairs
 

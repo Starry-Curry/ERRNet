@@ -96,7 +96,7 @@ def mask_loss(prior: torch.Tensor, mask: torch.Tensor, sample_weight: Optional[t
 
 
 def clean_consistency_loss(input_image: torch.Tensor, pred: torch.Tensor, prior: torch.Tensor) -> torch.Tensor:
-    prior = prior.to(device=pred.device, dtype=pred.dtype)
+    prior = prior.detach().to(device=pred.device, dtype=pred.dtype)
     return torch.mean(torch.abs((1.0 - prior) * (input_image - pred)))
 
 

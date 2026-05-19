@@ -46,7 +46,11 @@ class _GatedAdapter(nn.Module):
         x = self.in_proj(coarse)
         for block in self.blocks:
             x = block(x, prior)
-        return torch.clamp(coarse + self.residual_scale * torch.tanh(self.out_proj(x)), 0.0, 1.0)
+        gate = F.interpolate(prior, size=coarse.shape[-2:], mode="bilinear", align_corners=False)
+        if gate.shape[1] != 1:
+            gate = gate.mean(dim=1, keepdim=True)
+        residual = self.residual_scale * gate.clamp(0.0, 1.0) * torch.tanh(self.out_proj(x))
+        return torch.clamp(coarse + residual, 0.0, 1.0)
 
 
 class RAPERRNet(nn.Module):

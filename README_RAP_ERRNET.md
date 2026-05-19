@@ -181,8 +181,10 @@ Optional extra-data fine-tuning should be launched as a separate run:
 
 ```bash
 python train_rap_errnet.py \
-  --config configs/rap_errnet_hyper_zerores_staged.yaml \
+  --config configs/rap_errnet_hyper_zerores_extra_finetune.yaml \
   --name rap_errnet_hyper_zerores_staged_extra \
+  --resume checkpoints/rap_errnet_hyper_zerores_staged/best.pt \
+  --resume_model_only \
   --data_root ./data \
   --use_physics_synthesis \
   --use_prior_head \

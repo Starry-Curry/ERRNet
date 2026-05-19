@@ -164,6 +164,10 @@ Main: VOC synthesis + Zhang real train
 Extra: Main + OpenRR or Main + data/extra_train
 ```
 
+Extra-data fine-tuning should resume from the main staged checkpoint with
+`--resume_model_only`, so the model weights are reused but epoch count and
+optimizer state are reset for a short low-LR real-data adaptation.
+
 ## 5. Loss Design
 
 Current loss remains a good base:
@@ -404,6 +408,27 @@ python train_rap_errnet.py \
 5. Only after the main staged result is stable, run an extra-data fine-tuning
    experiment with `--use_openrr` or `--use_extra_train`.
 6. Generate qualitative comparisons for CEILNet and SIR2 Wild.
+
+Extra-data fine-tuning command:
+
+```bash
+python train_rap_errnet.py \
+  --config configs/rap_errnet_hyper_zerores_extra_finetune.yaml \
+  --name rap_errnet_hyper_zerores_openrr_ft \
+  --resume checkpoints/rap_errnet_hyper_zerores_staged_ppu_bs32/best.pt \
+  --resume_model_only \
+  --data_root ./data \
+  --use_physics_synthesis \
+  --use_prior_head \
+  --use_gated_blocks \
+  --use_refinement \
+  --use_openrr \
+  --max_openrr_pairs 1000 \
+  --batch_size 32 \
+  --num_workers 8 \
+  --device auto \
+  --progress_bar
+```
 
 ## 10. Report Claim
 

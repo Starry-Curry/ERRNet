@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--resume", default=None, help="checkpoint path to resume")
+    parser.add_argument("--resume_model_only", action="store_true", help="load checkpoint weights but reset epoch and optimizer state")
     parser.add_argument("--use_physics_synthesis", action="store_true", help="enable VOC physics-guided synthesis")
     parser.add_argument("--use_prior_head", action="store_true", default=None, help="enable reflection prior head")
     parser.add_argument("--no_prior_head", action="store_true", help="disable reflection prior head")
@@ -428,9 +429,12 @@ def main() -> None:
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint["model"], strict=False)
-        pending_optimizer_state = checkpoint.get("optimizer")
-        start_epoch = int(checkpoint.get("epoch", 0)) + 1
-        best_loss = float(checkpoint.get("best_loss", best_loss))
+        if args.resume_model_only:
+            print(f"[i] loaded model weights from {args.resume}; epoch and optimizer were reset")
+        else:
+            pending_optimizer_state = checkpoint.get("optimizer")
+            start_epoch = int(checkpoint.get("epoch", 0)) + 1
+            best_loss = float(checkpoint.get("best_loss", best_loss))
 
     save_dir = Path("checkpoints") / args.name
     log_path = save_dir / "train_log.csv"
