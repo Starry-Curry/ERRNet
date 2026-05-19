@@ -164,6 +164,7 @@ Training loss snapshots:
 | 49 | 0.114482 | 0.055872 | 0.014293 | Slow but steady decrease. |
 | 50 | 0.113675 | 0.055135 | 0.014238 | Good mid-training checkpoint. |
 | 51 partial | 0.1134 | 0.0549 | 0.0142 | Ongoing, about 58% through epoch when observed. |
+| 100 | 0.094574 | 0.038360 | 0.013172 | Final from-scratch run converged, but test metrics remain below baseline on CEILNet/Zhang20. |
 
 Interpretation:
 
@@ -248,6 +249,38 @@ Interpretation:
   weak compared with the pretrained hypercolumn ERRNet on some benchmarks.
 - Recommended next step: keep the current run as `RAP from scratch`, but start a
   `RAP pretrained-init` run as the likely main result candidate.
+
+## 7.1 Final From-Scratch Evaluation Result
+
+Snapshot:
+
+```text
+Checkpoint: checkpoints/rap_errnet_main/best.pt
+Training stage: epoch 100, from-scratch RAP
+Save dir: results/rap_errnet_main_final_best
+```
+
+Metrics:
+
+| Dataset | RAP PSNR | RAP SSIM | RAP NCC | RAP LMSE | Baseline PSNR | Baseline SSIM | Baseline NCC | Baseline LMSE | Final Reading |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Average | 22.9575 | 0.8844 | 0.9464 | 0.0056 | - | - | - | - | Average is not directly comparable to baseline because baseline was recorded per dataset. |
+| CEILNet Table2 | 19.1752 | 0.8395 | 0.8802 | 0.0127 | 27.8765 | 0.9407 | 0.9808 | 0.0048 | Still far below baseline; from-scratch 3-channel RAP is not suitable as the main result. |
+| Zhang real20 | 19.5196 | 0.7320 | 0.8173 | 0.0209 | 23.5531 | 0.8285 | 0.8877 | 0.0201 | Still worse than baseline. |
+| SIR2 Objects | 25.7196 | 0.9109 | 0.9855 | 0.0028 | 24.8533 | 0.8980 | 0.9817 | 0.0029 | Improves structural metrics and PSNR over baseline. |
+| SIR2 Postcard | 20.8931 | 0.8816 | 0.9508 | 0.0038 | 22.0702 | 0.8773 | 0.9463 | 0.0044 | Mixed: PSNR lower, SSIM/NCC/LMSE better. |
+| SIR2 Wild | 25.5726 | 0.9119 | 0.9524 | 0.0045 | 25.1778 | 0.8861 | 0.9359 | 0.0083 | Clearly improves SSIM/NCC/LMSE and slightly improves PSNR. |
+
+Interpretation:
+
+- The from-scratch model learned useful reflection-aware behavior on SIR2,
+  especially real-world structural quality.
+- It does not preserve the strong synthetic benchmark behavior of pretrained
+  ERRNet, with CEILNet remaining about 8.7 dB below the baseline.
+- This confirms the project should not use from-scratch RAP as the main method.
+  It should be reported as a diagnostic/reference experiment showing that the
+  added prior/refinement idea helps some real subsets but needs pretrained
+  ERRNet anchoring for stable benchmark performance.
 
 ## 8. Next Experiments
 
