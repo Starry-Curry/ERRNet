@@ -39,6 +39,8 @@ class _GatedAdapter(nn.Module):
         self.in_proj = nn.Sequential(nn.Conv2d(3, channels, kernel_size=3, padding=1), nn.ReLU(inplace=True))
         self.blocks = nn.ModuleList([ReflectionGatedResBlock(channels), ReflectionGatedResBlock(channels)])
         self.out_proj = nn.Conv2d(channels, 3, kernel_size=3, padding=1)
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
 
     def forward(self, coarse: torch.Tensor, prior: torch.Tensor) -> torch.Tensor:
         x = self.in_proj(coarse)

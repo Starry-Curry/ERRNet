@@ -501,3 +501,60 @@ Interpretation:
   on SSIM, NCC, and LMSE, and also improves PSNR on all three subsets.
 - The only unresolved benchmark is Zhang real20, which needs full-memory PPU
   evaluation before drawing final conclusions.
+
+## 14. CEILNet Gap Analysis And Code Mitigation
+
+Observed issue:
+
+```text
+CEILNet Table 2 baseline:       27.8765 PSNR
+From-scratch RAP epoch63:       19.0772 PSNR
+Hyper-pretrained RAP epoch37:   24.0434 PSNR
+```
+
+Analysis:
+
+- CEILNet Table 2 is a synthetic benchmark where the original ERRNet `--hyper`
+  baseline is already very strong.
+- The first hyper-pretrained RAP run loads the ERRNet backbone, but the newly
+  added gated adapter and refinement head were randomly initialized.
+- Because these branches add residual corrections after the coarse ERRNet
+  output, random initialization can perturb a strong pretrained output before
+  the new branches learn meaningful corrections.
+- This hurts CEILNet more than SIR2 because CEILNet rewards close pixel-level
+  agreement with synthetic ground truth, while SIR2 gains more from structural
+  and local reflection-aware corrections.
+
+Code mitigation:
+
+- `_GatedAdapter.out_proj` is now zero-initialized.
+- `LightweightRefinement` final RGB prediction layer is now zero-initialized.
+
+Expected behavior:
+
+- A newly initialized `rap_errnet_hyper_pretrained` model should start from the
+  pretrained ERRNet output, with zero residual correction.
+- Training can still learn non-zero prior-aware corrections, but it no longer
+  starts by randomly damaging CEILNet performance.
+
+Recommended follow-up run:
+
+```bash
+python train_rap_errnet.py \
+  --config configs/rap_errnet_hyper_pretrained.yaml \
+  --name rap_errnet_hyper_pretrained_zerores_bs32 \
+  --data_root ./data \
+  --use_physics_synthesis \
+  --use_prior_head \
+  --use_gated_blocks \
+  --use_refinement \
+  --batch_size 32 \
+  --epochs 100 \
+  --num_workers 8 \
+  --device auto \
+  --progress_bar
+```
+
+This should be treated as the improved hyper-pretrained candidate. The existing
+`rap_errnet_hyper_pretrained_ppu_bs32` run remains useful as an ablation of
+non-zero random residual initialization.

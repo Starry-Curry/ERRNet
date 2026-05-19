@@ -59,6 +59,27 @@ It preserves the promising behavior already observed on SIR2 Objects and Wild,
 where the prior/refinement path improved structural metrics such as SSIM, NCC,
 and LMSE.
 
+## 3.1 Stability Update: Zero-Initialized Residual Branches
+
+After the first hyper-pretrained mid evaluation, CEILNet improved substantially
+over the 3-channel from-scratch run but still lagged behind the pretrained
+baseline. One implementation reason is that the newly added gated adapter and
+refinement head were randomly initialized. Even with a pretrained ERRNet
+backbone, these random residual branches can perturb the baseline output before
+they learn useful corrections.
+
+The RAP residual branches are therefore initialized as identity-preserving
+modules:
+
+- the gated adapter output projection is initialized to zero;
+- the refinement head final RGB prediction layer is initialized to zero.
+
+With this update, a hyper-pretrained RAP model starts from the original ERRNet
+baseline behavior and only changes the output after training learns non-zero
+residual corrections. This is a more conservative and fair initialization for
+fine-tuning, especially for synthetic benchmarks such as CEILNet Table 2 where
+the baseline is already strong.
+
 ## 4. Experiment Positioning
 
 Use the experiments as follows:
@@ -138,4 +159,3 @@ Suggested wording:
 > effect of reflection-aware priors and refinement, we introduced a hypercolumn
 > RAP-ERRNet variant that reuses the original ERRNet `--hyper` input pathway and
 > loads the provided pretrained ERRNet weights before training the RAP modules.
-

@@ -29,6 +29,9 @@ class LightweightRefinement(nn.Module):
 
     def __init__(self, in_channels: int = 10, hidden_channels: int = 64):
         super().__init__()
+        final = nn.Conv2d(32, 3, kernel_size=3, padding=1)
+        nn.init.zeros_(final.weight)
+        nn.init.zeros_(final.bias)
         self.net = nn.Sequential(
             nn.Conv2d(in_channels, hidden_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -36,11 +39,10 @@ class LightweightRefinement(nn.Module):
             _ResidualBlock(hidden_channels),
             nn.Conv2d(hidden_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 3, kernel_size=3, padding=1),
+            final,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 4 or x.shape[1] != 10:
             raise ValueError(f"LightweightRefinement expects [B,10,H,W], got {tuple(x.shape)}.")
         return self.net(x)
-

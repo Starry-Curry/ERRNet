@@ -176,6 +176,11 @@ If a dataset is missing, `eval_all.py` warns and skips it. Training raises a cle
 
 The current `use_gated_blocks` implementation is a compatibility adapter, not an invasive replacement of ERRNet internal residual blocks.
 
+For hypercolumn pretrained fine-tuning, the added gated/refinement residual
+branches are initialized to produce zero correction. This keeps the initial
+RAP-ERRNet output aligned with the pretrained ERRNet baseline and avoids
+randomly perturbing strong synthetic-benchmark performance before training.
+
 If a RAP checkpoint was trained with `use_hypercolumn_backbone: true`, evaluate it with the matching config. Otherwise `eval_all.py` will intentionally stop with a clear backbone shape mismatch instead of silently skipping the first convolution.
 
 ## 12. Tables And Visualizations
