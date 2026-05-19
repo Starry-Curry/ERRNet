@@ -25,6 +25,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", choices=["errnet", "rap_errnet"], default="rap_errnet")
     parser.add_argument("--ckpt", required=True, help="checkpoint path")
     parser.add_argument("--config", default=None, help="RAP-ERRNet YAML config used to build the checkpointed model")
+    parser.add_argument("--baseline_ckpt", default=None, help="optional ERRNet checkpoint to include in saved visualizations")
+    parser.add_argument("--baseline_hyper", action="store_true", help="build the optional baseline as ERRNet --hyper")
     parser.add_argument("--data_root", default="./data")
     parser.add_argument("--save_dir", default="results/rap_errnet_eval")
     parser.add_argument("--datasets", default=DEFAULT_DATASETS, help="comma-separated dataset names")
@@ -116,11 +118,20 @@ def _raise_if_rap_backbone_mismatch(state: Mapping[str, Any], model, ckpt_path: 
     )
 
 
-def load_model(model_name: str, ckpt_path: Path, device, config_path: Optional[str | Path] = None):
+def load_model(
+    model_name: str,
+    ckpt_path: Path,
+    device,
+    config_path: Optional[str | Path] = None,
+    *,
+    errnet_hyper: bool = False,
+):
     import torch
     from torch import nn
+    import torch.nn.functional as F
 
     from models import arch
+    from models.vgg import Vgg19
 
     class ERRNetEvalWrapper(nn.Module):
         def __init__(self):
@@ -129,6 +140,29 @@ def load_model(model_name: str, ckpt_path: Path, device, config_path: Optional[s
 
         def forward(self, x):
             output = self.net(x).clamp(0.0, 1.0)
+            return {
+                "output": output,
+                "coarse": output,
+                "prior": torch.zeros((x.shape[0], 1, x.shape[2], x.shape[3]), dtype=x.dtype, device=x.device),
+                "residual": torch.zeros_like(output),
+            }
+
+    class ERRNetHyperEvalWrapper(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.vgg = Vgg19(requires_grad=False)
+            self.net = arch.errnet(1475, 3)
+
+        def forward(self, x):
+            self.vgg = self.vgg.to(x.device)
+            self.vgg.eval()
+            with torch.no_grad():
+                hypercolumn = self.vgg(x)
+                hypercolumn = [
+                    F.interpolate(feature.detach(), size=x.shape[-2:], mode="bilinear", align_corners=False)
+                    for feature in hypercolumn
+                ]
+            output = self.net(torch.cat([x, *hypercolumn], dim=1)).clamp(0.0, 1.0)
             return {
                 "output": output,
                 "coarse": output,
@@ -152,7 +186,7 @@ def load_model(model_name: str, ckpt_path: Path, device, config_path: Optional[s
             raise ValueError(f"No compatible RAP-ERRNet tensors were found in {ckpt_path}.")
         model.load_state_dict(compatible, strict=False)
     else:
-        model = ERRNetEvalWrapper()
+        model = ERRNetHyperEvalWrapper() if errnet_hyper else ERRNetEvalWrapper()
         state = checkpoint.get("icnn", checkpoint.get("model", checkpoint.get("state_dict", checkpoint)))
         compatible = _filter_compatible(state, model.net)
         skipped = len(state) - len(compatible)
@@ -195,16 +229,23 @@ def save_visualization(
     output_tensor,
     target_tensor,
     prior_tensor: Optional[Any],
+    baseline_tensor: Optional[Any] = None,
 ) -> None:
     import numpy as np
     from PIL import Image
 
     input_img = _tensor_to_rgb(input_tensor)
+    baseline_img = _tensor_to_rgb(baseline_tensor) if baseline_tensor is not None else None
     output_img = _tensor_to_rgb(output_tensor)
     target_img = _tensor_to_rgb(target_tensor)
-    h = min(input_img.shape[0], output_img.shape[0], target_img.shape[0])
-    w = min(input_img.shape[1], output_img.shape[1], target_img.shape[1])
+    base_images = [input_img, output_img, target_img]
+    if baseline_img is not None:
+        base_images.append(baseline_img)
+    h = min(image.shape[0] for image in base_images)
+    w = min(image.shape[1] for image in base_images)
     input_img = _center_crop_array(input_img, (h, w))
+    if baseline_img is not None:
+        baseline_img = _center_crop_array(baseline_img, (h, w))
     output_img = _center_crop_array(output_img, (h, w))
     target_img = _center_crop_array(target_img, (h, w))
     error = np.abs(output_img.astype(np.float32) - target_img.astype(np.float32)).mean(axis=2)
@@ -216,7 +257,11 @@ def save_visualization(
     else:
         prior = _tensor_to_rgb(prior_tensor)
         prior_rgb = _center_crop_array(prior, (h, w))
-    canvas = np.concatenate([input_img, output_img, target_img, error_rgb, prior_rgb], axis=1)
+    columns = [input_img]
+    if baseline_img is not None:
+        columns.append(baseline_img)
+    columns.extend([output_img, target_img, error_rgb, prior_rgb])
+    canvas = np.concatenate(columns, axis=1)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(canvas).save(save_path)
 
@@ -235,6 +280,7 @@ def evaluate_dataset(
     save_dir: Path,
     device,
     save_images: bool,
+    baseline_model=None,
 ) -> List[Dict[str, Any]]:
     import torch
     from torch.utils.data import DataLoader
@@ -257,18 +303,26 @@ def evaluate_dataset(
         with torch.no_grad():
             outputs = model(input_tensor)
         output = outputs["output"].clamp(0.0, 1.0)
+        baseline_output = None
+        if baseline_model is not None:
+            with torch.no_grad():
+                baseline_outputs = baseline_model(input_tensor)
+            baseline_output = baseline_outputs["output"].clamp(0.0, 1.0)
         metric_values = compute_metrics(output[0], target_tensor[0])
         row = {"dataset": dataset_name, "name": name, **metric_values}
         rows.append(row)
 
         if save_images:
             _save_output_image(save_dir / "outputs" / dataset_name / f"{name}.png", output[0])
+            if baseline_output is not None:
+                _save_output_image(save_dir / "baseline_outputs" / dataset_name / f"{name}.png", baseline_output[0])
             save_visualization(
                 save_dir / "visualizations" / dataset_name / f"{name}.png",
                 input_tensor[0],
                 output[0],
                 target_tensor[0],
                 outputs.get("prior", None)[0] if outputs.get("prior", None) is not None else None,
+                baseline_output[0] if baseline_output is not None else None,
             )
 
     save_metrics_csv(rows, save_dir / f"metrics_{dataset_name}.csv")
@@ -283,11 +337,24 @@ def main() -> None:
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     model = load_model(args.model, Path(args.ckpt), device, config_path=args.config)
+    baseline_model = None
+    if args.baseline_ckpt:
+        if not args.save_images:
+            warnings.warn("--baseline_ckpt only affects saved visualizations; use --save_images to write comparison images.", RuntimeWarning)
+        baseline_model = load_model("errnet", Path(args.baseline_ckpt), device, errnet_hyper=args.baseline_hyper)
 
     all_rows: List[Dict[str, Any]] = []
     dataset_names = [item.strip() for item in args.datasets.split(",") if item.strip()]
     for dataset_name in dataset_names:
-        rows = evaluate_dataset(model, dataset_name, Path(args.data_root), save_dir, device, args.save_images)
+        rows = evaluate_dataset(
+            model,
+            dataset_name,
+            Path(args.data_root),
+            save_dir,
+            device,
+            args.save_images,
+            baseline_model=baseline_model,
+        )
         all_rows.extend(rows)
 
     if all_rows:

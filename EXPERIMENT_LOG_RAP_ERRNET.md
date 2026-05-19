@@ -558,3 +558,35 @@ python train_rap_errnet.py \
 This should be treated as the improved hyper-pretrained candidate. The existing
 `rap_errnet_hyper_pretrained_ppu_bs32` run remains useful as an ablation of
 non-zero random residual initialization.
+
+## 15. Qualitative Comparison Visualization
+
+`eval_all.py` can save RAP and baseline outputs into the same visualization
+image. This is useful for checking whether PSNR drops are caused by residual
+reflection, color shift, oversmoothing, or localized artifacts.
+
+Command pattern:
+
+```bash
+python eval_all.py \
+  --model rap_errnet \
+  --config configs/rap_errnet_hyper_pretrained.yaml \
+  --ckpt checkpoints/rap_errnet_hyper_pretrained_ppu_bs32_mid.pt \
+  --baseline_ckpt checkpoints/errnet/errnet_060_00463920.pt \
+  --baseline_hyper \
+  --data_root ./data \
+  --save_dir results/rap_errnet_hyper_pretrained_ppu_bs32_mid_ceilnet_compare \
+  --datasets ceilnet \
+  --save_images \
+  --device auto
+```
+
+The saved visualization order is:
+
+```text
+Input | Baseline | Output | GT | Error Map | Prior Map
+```
+
+For large full-resolution datasets, run this per dataset or on CEILNet first,
+because loading both the baseline hypercolumn model and RAP-Hyper increases
+evaluation memory usage.

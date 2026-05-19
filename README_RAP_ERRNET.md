@@ -146,6 +146,28 @@ python eval_all.py \
 
 The `--config` argument is required during evaluation for hypercolumn RAP checkpoints, because the model must be reconstructed with the same 1475-channel backbone used during training.
 
+To save qualitative comparisons against the course ERRNet baseline in one image,
+add the baseline checkpoint:
+
+```bash
+python eval_all.py \
+  --model rap_errnet \
+  --config configs/rap_errnet_hyper_pretrained.yaml \
+  --ckpt checkpoints/rap_errnet_hyper_pretrained/best.pt \
+  --baseline_ckpt checkpoints/errnet/errnet_060_00463920.pt \
+  --baseline_hyper \
+  --data_root ./data \
+  --save_dir results/rap_errnet_hyper_pretrained_compare \
+  --datasets ceilnet \
+  --save_images
+```
+
+The visualization order becomes:
+
+```text
+Input | Baseline | Output | GT | Error Map | Prior Map
+```
+
 ## 9. Ablation Commands
 
 ```bash
