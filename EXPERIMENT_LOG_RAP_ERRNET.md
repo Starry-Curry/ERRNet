@@ -212,9 +212,41 @@ results/rap_errnet_main_mid/metrics_sir2_wild.csv
 results/rap_errnet_main_mid/visualizations/
 ```
 
-## 7. Next Experiments
+## 7. Mid-Training Evaluation Result
 
-### 7.1 Finish Main Run
+Snapshot:
+
+```text
+Checkpoint: checkpoints/rap_errnet_main/best_mid_snapshot.pt
+Training stage: about epoch 50, from-scratch RAP
+Save dir: results/rap_errnet_main_mid
+```
+
+Metrics:
+
+| Dataset | RAP PSNR | RAP SSIM | RAP NCC | RAP LMSE | Baseline PSNR | Baseline SSIM | Baseline NCC | Baseline LMSE | Mid-Eval Reading |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| CEILNet Table2 | 19.0065 | 0.8315 | 0.8734 | 0.0136 | 27.8765 | 0.9407 | 0.9808 | 0.0048 | Much worse; synthetic CEILNet is not recovered well by from-scratch RAP at this stage. |
+| Zhang real20 | 19.4201 | 0.7303 | 0.8101 | 0.0214 | 23.5531 | 0.8285 | 0.8877 | 0.0201 | Worse; real20 generalization needs improvement. |
+| SIR2 Objects | 25.7091 | 0.9082 | 0.9853 | 0.0027 | 24.8533 | 0.8980 | 0.9817 | 0.0029 | Improved on all metrics. |
+| SIR2 Postcard | 20.9513 | 0.8783 | 0.9498 | 0.0041 | 22.0702 | 0.8773 | 0.9463 | 0.0044 | Mixed: PSNR lower, SSIM/NCC/LMSE slightly better. |
+| SIR2 Wild | 25.0728 | 0.9063 | 0.9490 | 0.0048 | 25.1778 | 0.8861 | 0.9359 | 0.0083 | Strong structural/local improvement; PSNR nearly tied. |
+
+Interpretation:
+
+- The method shows promising gains on SIR2 Objects and Wild, especially SSIM,
+  NCC, and LMSE.
+- The current from-scratch run is not competitive on CEILNet Table2 and Zhang
+  real20.
+- This suggests that the added physics/prior/refinement components can help
+  real-world structural quality, but the 3-channel from-scratch backbone is too
+  weak compared with the pretrained hypercolumn ERRNet on some benchmarks.
+- Recommended next step: keep the current run as `RAP from scratch`, but start a
+  `RAP pretrained-init` run as the likely main result candidate.
+
+## 8. Next Experiments
+
+### 8.1 Finish Main Run
 
 Let `rap_errnet_main` complete to 100 epochs unless validation metrics clearly
 show severe degradation.
@@ -231,7 +263,7 @@ CUDA_VISIBLE_DEVICES=2 python eval_all.py \
   --device auto
 ```
 
-### 7.2 Optional Pretrained-Backbone Run
+### 8.2 Pretrained-Backbone Run
 
 Because the method is positioned as an ERRNet improvement, a second run with the
 ERRNet pretrained backbone is useful if time permits:
@@ -257,10 +289,10 @@ CUDA_VISIBLE_DEVICES=2 python train_rap_errnet.py \
   --progress_bar
 ```
 
-This is not mandatory for the first complete result, but it is a strong backup
-if from-scratch RAP does not beat the pretrained ERRNet baseline.
+This is now recommended, because the from-scratch mid-eval is weak on CEILNet
+and Zhang real20.
 
-### 7.3 Ablations
+### 8.3 Ablations
 
 Minimum recommended ablations:
 
@@ -278,7 +310,7 @@ CUDA_VISIBLE_DEVICES=2 python train_rap_errnet.py --config configs/rap_errnet.ya
 For the report, a 30-epoch ablation is acceptable as a first-pass trend if time
 is limited. If a variant is close to the main model, extend it to 100 epochs.
 
-## 8. Remaining Deliverables
+## 9. Remaining Deliverables
 
 1. Finish RAP main training and evaluate all test sets.
 2. Compare RAP metrics against the baseline table in Section 4.
@@ -302,7 +334,7 @@ Metrics: PSNR, SSIM, NCC, LMSE
 Visuals: Input | Output | GT | Error Map | Prior Map
 ```
 
-## 9. Current Risk Notes
+## 10. Current Risk Notes
 
 - The current main RAP run is from scratch. This is valid, but it may need more
   epochs to beat a pretrained ERRNet baseline.
@@ -311,4 +343,3 @@ Visuals: Input | Output | GT | Error Map | Prior Map
   hypercolumn pretrained ERRNet; use `test_errnet.py --hyper` for baseline
   metrics.
 - Self-collected data is still missing and is required by the course project.
-
