@@ -2,9 +2,9 @@ model:
   use_prior_head: true
   use_gated_blocks: true
   use_refinement: true
-  use_hypercolumn_backbone: false
+  use_hypercolumn_backbone: true
   freeze_backbone: false
-  pretrained_errnet_path: null
+  pretrained_errnet_path: checkpoints/errnet/errnet_060_00463920.pt
   residual_scale: 0.1
 
 data:

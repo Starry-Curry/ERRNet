@@ -15,7 +15,12 @@ python train_errnet.py --name errnet --hyper
 python test_errnet.py --name errnet --dataset ceilnet_table2 -r --icnn_path checkpoints/errnet/errnet_060_00463920.pt --hyper
 ```
 
-RAP-ERRNet is added through new files. `models/rap_errnet.py` reuses `models.arch.errnet` as a coarse backbone. The current code does not rewrite the original DRNet residual blocks. `use_gated_blocks` enables a lightweight prior-gated adapter after the coarse output, so the baseline code path stays intact.
+RAP-ERRNet is added through new files. `models/rap_errnet.py` reuses `models.arch.errnet` as a coarse backbone. The code does not rewrite the original DRNet residual blocks. `use_gated_blocks` enables a lightweight prior-gated adapter after the coarse output, so the baseline code path stays intact.
+
+Two backbone modes are supported:
+
+- `configs/rap_errnet.yaml`: 3-channel RGB backbone, useful for quick local/debug runs and from-scratch ablations.
+- `configs/rap_errnet_hyper_pretrained.yaml`: ERRNet `--hyper` backbone, RGB plus VGG19 hypercolumn features, 1475 channels total. This is the recommended main experiment because it can fully load the course pretrained `--hyper` ERRNet checkpoint.
 
 This fork was found under `D:\Classes\DIP\DIP-Lab\ERRNet`, while the design document is in the parent directory.
 
@@ -23,9 +28,10 @@ This fork was found under `D:\Classes\DIP\DIP-Lab\ERRNet`, while the design docu
 
 1. Physics-guided reflection synthesis in `datasets/reflection_synthesis.py`.
 2. Reflection prior prediction head in `models/modules/reflection_prior.py`.
-3. Lightweight residual refinement in `models/modules/refinement.py`.
+3. Prior-gated residual adapter in `models/modules/gated_blocks.py`.
+4. Lightweight residual refinement in `models/modules/refinement.py`.
 
-All main additions are controlled by flags: `--use_prior_head`, `--use_gated_blocks`, `--use_refinement`, and their `--no_*` ablation variants.
+All main additions are controlled by flags: `--use_prior_head`, `--use_gated_blocks`, `--use_refinement`, `--use_hypercolumn_backbone`, and their `--no_*` ablation variants.
 
 ## 4. Dataset Links And Layout
 
@@ -90,7 +96,7 @@ python test_errnet.py --name errnet_baseline --dataset ceilnet_table2 -r --icnn_
 python eval_all.py --model errnet --ckpt checkpoints/errnet_baseline/latest.pt --data_root ./data --save_dir results/errnet_baseline --save_images
 ```
 
-Note: `eval_all.py --model errnet` uses a 3-channel ERRNet wrapper. Original `--hyper` checkpoints are best evaluated with `test_errnet.py` unless local VGG hypercolumn support is added to the unified evaluator.
+Note: original `--hyper` baseline checkpoints are still best evaluated with `test_errnet.py --hyper` so the baseline path stays exactly comparable to the course code.
 
 ## 8. RAP-ERRNet Commands
 
@@ -111,6 +117,34 @@ python eval_all.py \
   --save_dir results/rap_errnet_main \
   --save_images
 ```
+
+Recommended A6000/server main run with full ERRNet hypercolumn pretrained initialization:
+
+```bash
+python train_rap_errnet.py \
+  --config configs/rap_errnet_hyper_pretrained.yaml \
+  --name rap_errnet_hyper_pretrained \
+  --data_root ./data \
+  --use_physics_synthesis \
+  --use_prior_head \
+  --use_gated_blocks \
+  --use_refinement \
+  --batch_size 8 \
+  --epochs 100 \
+  --num_workers 6 \
+  --device auto \
+  --progress_bar
+
+python eval_all.py \
+  --model rap_errnet \
+  --config configs/rap_errnet_hyper_pretrained.yaml \
+  --ckpt checkpoints/rap_errnet_hyper_pretrained/best.pt \
+  --data_root ./data \
+  --save_dir results/rap_errnet_hyper_pretrained \
+  --save_images
+```
+
+The `--config` argument is required during evaluation for hypercolumn RAP checkpoints, because the model must be reconstructed with the same 1475-channel backbone used during training.
 
 ## 9. Ablation Commands
 
@@ -141,6 +175,8 @@ If `mask.png` is missing, the dataset adapter creates a pseudo mask from `abs(in
 If a dataset is missing, `eval_all.py` warns and skips it. Training raises a clear error when no usable training dataset is found.
 
 The current `use_gated_blocks` implementation is a compatibility adapter, not an invasive replacement of ERRNet internal residual blocks.
+
+If a RAP checkpoint was trained with `use_hypercolumn_backbone: true`, evaluate it with the matching config. Otherwise `eval_all.py` will intentionally stop with a clear backbone shape mismatch instead of silently skipping the first convolution.
 
 ## 12. Tables And Visualizations
 

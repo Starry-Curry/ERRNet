@@ -16,6 +16,7 @@ The project has moved from implementation to experiment production.
 | A6000 environment | Done | ERRNet baseline and RAP debug training both run successfully. |
 | Baseline pretrained evaluation | Mostly done | CEILNet, real20, SIR2 Objects/Postcard/Wild have been evaluated. |
 | RAP main training | Running | `rap_errnet_main`, from scratch, 100 epochs planned. |
+| RAP hyper-pretrained path | Ready for next run | New config uses the same ERRNet `--hyper` 1475-channel backbone as the course baseline. |
 | RAP full evaluation | Pending | Run after mid/final checkpoint is available. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
@@ -29,6 +30,8 @@ The project has moved from implementation to experiment production.
 | `9eb02da` | Reduced repeated missing-mask warnings and added per-epoch batch progress logging. |
 | `de3f3dd` | Added dynamic progress bar for RAP training. |
 | `dde1a8a` | Cleaned progress-bar output so dynamic progress and line logs do not interleave. |
+| `c4d9e5d` | Recorded mid-training RAP evaluation and baseline comparison. |
+| current update | Added optional hypercolumn RAP backbone and hyper-pretrained experiment config. |
 
 ## 3. Environment And Data
 
@@ -265,32 +268,57 @@ CUDA_VISIBLE_DEVICES=2 python eval_all.py \
 
 ### 8.2 Pretrained-Backbone Run
 
-Because the method is positioned as an ERRNet improvement, a second run with the
-ERRNet pretrained backbone is useful if time permits:
+Because the method is positioned as an ERRNet improvement, the strongest next
+run should use the same `--hyper` input path as the pretrained baseline. The new
+config is:
 
-```bash
-cp configs/rap_errnet.yaml configs/rap_errnet_pretrained.yaml
-python -c "from pathlib import Path; p=Path('configs/rap_errnet_pretrained.yaml'); s=p.read_text(); s=s.replace('pretrained_errnet_path: null', 'pretrained_errnet_path: checkpoints/errnet/errnet_060_00463920.pt'); p.write_text(s)"
+```text
+configs/rap_errnet_hyper_pretrained.yaml
 ```
 
+This config sets:
+
+```text
+use_hypercolumn_backbone: true
+pretrained_errnet_path: checkpoints/errnet/errnet_060_00463920.pt
+```
+
+That means the first ERRNet convolution is `1475 -> 256`, so the course
+pretrained `--hyper` checkpoint can be loaded completely instead of skipping the
+first layer.
+
 ```bash
-CUDA_VISIBLE_DEVICES=2 python train_rap_errnet.py \
-  --config configs/rap_errnet_pretrained.yaml \
-  --name rap_errnet_pretrained \
+CUDA_VISIBLE_DEVICES=0 python train_rap_errnet.py \
+  --config configs/rap_errnet_hyper_pretrained.yaml \
+  --name rap_errnet_hyper_pretrained \
   --data_root ./data \
   --use_physics_synthesis \
   --use_prior_head \
   --use_gated_blocks \
   --use_refinement \
-  --batch_size 16 \
+  --batch_size 8 \
   --epochs 100 \
-  --num_workers 8 \
+  --num_workers 6 \
   --device auto \
   --progress_bar
 ```
 
-This is now recommended, because the from-scratch mid-eval is weak on CEILNet
-and Zhang real20.
+Evaluate with the same config:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python eval_all.py \
+  --model rap_errnet \
+  --config configs/rap_errnet_hyper_pretrained.yaml \
+  --ckpt checkpoints/rap_errnet_hyper_pretrained/best.pt \
+  --data_root ./data \
+  --save_dir results/rap_errnet_hyper_pretrained \
+  --save_images \
+  --device auto
+```
+
+This is now the recommended main result candidate, because the from-scratch
+mid-eval is weak on CEILNet and Zhang real20, and a 3-channel RAP backbone is
+not architecture-matched to the pretrained `--hyper` baseline.
 
 ### 8.3 Ablations
 
@@ -338,7 +366,7 @@ Visuals: Input | Output | GT | Error Map | Prior Map
 
 - The current main RAP run is from scratch. This is valid, but it may need more
   epochs to beat a pretrained ERRNet baseline.
-- A pretrained-backbone RAP run is recommended as backup.
+- A hypercolumn pretrained RAP run is recommended as the main next experiment.
 - `eval_all.py --model errnet` is not the preferred baseline path for the
   hypercolumn pretrained ERRNet; use `test_errnet.py --hyper` for baseline
   metrics.

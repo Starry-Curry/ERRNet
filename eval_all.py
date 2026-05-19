@@ -8,6 +8,14 @@ import warnings
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+try:
+    import yaml
+except Exception as exc:  # pragma: no cover
+    yaml = None
+    YAML_IMPORT_ERROR = exc
+else:
+    YAML_IMPORT_ERROR = None
+
 
 DEFAULT_DATASETS = "ceilnet,zhang20,sir2_objects,sir2_postcard,sir2_wild,self,openrr_val"
 
@@ -16,12 +24,25 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate ERRNet or RAP-ERRNet on multiple datasets.")
     parser.add_argument("--model", choices=["errnet", "rap_errnet"], default="rap_errnet")
     parser.add_argument("--ckpt", required=True, help="checkpoint path")
+    parser.add_argument("--config", default=None, help="RAP-ERRNet YAML config used to build the checkpointed model")
     parser.add_argument("--data_root", default="./data")
     parser.add_argument("--save_dir", default="results/rap_errnet_eval")
     parser.add_argument("--datasets", default=DEFAULT_DATASETS, help="comma-separated dataset names")
     parser.add_argument("--save_images", action="store_true")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     return parser.parse_args()
+
+
+def load_config(path: Optional[str | Path]) -> Dict[str, Any]:
+    if path is None:
+        return {}
+    if yaml is None:
+        raise RuntimeError(f"PyYAML is required to read configs: {YAML_IMPORT_ERROR}")
+    cfg_path = Path(path)
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Config file not found: {cfg_path}")
+    with cfg_path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def choose_device(name: str) -> torch.device:
@@ -45,15 +66,61 @@ def _load_checkpoint(path: Path, map_location) -> Dict[str, Any]:
 
 def _filter_compatible(state: Mapping[str, Any], model) -> Dict[str, Any]:
     current = model.state_dict()
-    return {key: value for key, value in state.items() if key in current and tuple(value.shape) == tuple(current[key].shape)}
+    return {
+        key: value
+        for key, value in state.items()
+        if key in current and hasattr(value, "shape") and tuple(value.shape) == tuple(current[key].shape)
+    }
 
 
-def load_model(model_name: str, ckpt_path: Path, device):
+def _build_rap_model_from_config(config_path: Optional[str | Path]):
+    from models.rap_errnet import RAPERRNet
+
+    cfg = load_config(config_path)
+    model_cfg = dict(cfg.get("model", {}))
+    return RAPERRNet(
+        use_prior_head=bool(model_cfg.get("use_prior_head", True)),
+        use_gated_blocks=bool(model_cfg.get("use_gated_blocks", True)),
+        use_refinement=bool(model_cfg.get("use_refinement", True)),
+        use_hypercolumn_backbone=bool(model_cfg.get("use_hypercolumn_backbone", False)),
+        freeze_backbone=False,
+        pretrained_errnet_path=None,
+        residual_scale=float(model_cfg.get("residual_scale", 0.1)),
+    )
+
+
+def _raise_if_rap_backbone_mismatch(state: Mapping[str, Any], model, ckpt_path: Path, config_path: Optional[str | Path]) -> None:
+    first_key = "backbone.conv1.conv2d.weight"
+    if first_key not in state or first_key not in model.state_dict():
+        return
+    if not hasattr(state[first_key], "shape"):
+        return
+    checkpoint_shape = tuple(state[first_key].shape)
+    model_shape = tuple(model.state_dict()[first_key].shape)
+    if checkpoint_shape == model_shape:
+        return
+    hint = (
+        "This usually means the checkpoint was trained with the hypercolumn backbone "
+        "(1475 input channels) but eval_all.py built the default 3-channel RAP model."
+    )
+    config_hint = (
+        " Pass the matching config, for example "
+        "`--config configs/rap_errnet_hyper_pretrained.yaml`."
+        if config_path is None
+        else f" Check that {config_path} has the same model.use_hypercolumn_backbone setting used for training."
+    )
+    raise ValueError(
+        f"RAP-ERRNet checkpoint/model backbone mismatch for {ckpt_path}: "
+        f"checkpoint {first_key} has shape {checkpoint_shape}, model expects {model_shape}. "
+        f"{hint}{config_hint}"
+    )
+
+
+def load_model(model_name: str, ckpt_path: Path, device, config_path: Optional[str | Path] = None):
     import torch
     from torch import nn
 
     from models import arch
-    from models.rap_errnet import RAPERRNet
 
     class ERRNetEvalWrapper(nn.Module):
         def __init__(self):
@@ -74,8 +141,9 @@ def load_model(model_name: str, ckpt_path: Path, device):
     checkpoint = _load_checkpoint(ckpt_path, map_location=device)
 
     if model_name == "rap_errnet":
-        model: nn.Module = RAPERRNet()
+        model: nn.Module = _build_rap_model_from_config(config_path)
         state = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
+        _raise_if_rap_backbone_mismatch(state, model, ckpt_path, config_path)
         compatible = _filter_compatible(state, model)
         skipped = len(state) - len(compatible)
         if skipped:
@@ -214,7 +282,7 @@ def main() -> None:
     device = choose_device(args.device)
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    model = load_model(args.model, Path(args.ckpt), device)
+    model = load_model(args.model, Path(args.ckpt), device, config_path=args.config)
 
     all_rows: List[Dict[str, Any]] = []
     dataset_names = [item.strip() for item in args.datasets.split(",") if item.strip()]

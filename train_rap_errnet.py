@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_gated_blocks", action="store_true", help="disable prior-gated adapter")
     parser.add_argument("--use_refinement", action="store_true", default=None, help="enable residual refinement")
     parser.add_argument("--no_refinement", action="store_true", help="disable residual refinement")
+    parser.add_argument("--use_hypercolumn_backbone", action="store_true", default=None, help="use ERRNet --hyper VGG feature backbone")
+    parser.add_argument("--no_hypercolumn_backbone", action="store_true", help="disable ERRNet --hyper VGG feature backbone")
     parser.add_argument("--use_openrr", action="store_true", help="include OpenRR train pairs if available")
     parser.add_argument("--max_openrr_pairs", type=int, default=None, help="limit OpenRR training pairs")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="training device")
@@ -98,6 +100,7 @@ def build_model(args: argparse.Namespace, cfg: Mapping[str, Any]):
         use_prior_head=_resolve_bool(args, model_cfg, "use_prior_head"),
         use_gated_blocks=_resolve_bool(args, model_cfg, "use_gated_blocks"),
         use_refinement=_resolve_bool(args, model_cfg, "use_refinement"),
+        use_hypercolumn_backbone=_resolve_bool(args, model_cfg, "use_hypercolumn_backbone"),
         freeze_backbone=bool(model_cfg.get("freeze_backbone", False)),
         pretrained_errnet_path=model_cfg.get("pretrained_errnet_path"),
         residual_scale=float(model_cfg.get("residual_scale", 0.1)),

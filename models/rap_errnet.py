@@ -20,6 +20,7 @@ from models import arch
 from models.modules.gated_blocks import ReflectionGatedResBlock
 from models.modules.refinement import LightweightRefinement
 from models.modules.reflection_prior import ReflectionPriorHead
+from models.vgg import Vgg19
 
 
 def _load_torch_checkpoint(path: Path, map_location: str | torch.device = "cpu") -> Dict[str, Any]:
@@ -56,6 +57,10 @@ class RAPERRNet(nn.Module):
             coarse ERRNet output. The original ERRNet residual blocks are not
             modified in this compatibility implementation.
         use_refinement: Enable final residual refinement.
+        use_hypercolumn_backbone: Use the original ERRNet ``--hyper`` input
+            path: RGB plus VGG19 hypercolumn features, 1475 channels total.
+            This is the recommended setting when loading the course pretrained
+            ``--hyper`` ERRNet checkpoint.
         freeze_backbone: Freeze the reused ERRNet coarse backbone.
         pretrained_errnet_path: Optional checkpoint containing ``icnn`` weights.
         residual_scale: Scale for the final tanh-bounded residual.
@@ -67,6 +72,7 @@ class RAPERRNet(nn.Module):
         use_prior_head: bool = True,
         use_gated_blocks: bool = True,
         use_refinement: bool = True,
+        use_hypercolumn_backbone: bool = False,
         freeze_backbone: bool = False,
         pretrained_errnet_path: Optional[str | Path] = None,
         residual_scale: float = 0.1,
@@ -75,9 +81,12 @@ class RAPERRNet(nn.Module):
         self.use_prior_head = bool(use_prior_head)
         self.use_gated_blocks = bool(use_gated_blocks)
         self.use_refinement = bool(use_refinement)
+        self.use_hypercolumn_backbone = bool(use_hypercolumn_backbone)
         self.residual_scale = float(residual_scale)
 
-        self.backbone = arch.errnet(3, 3)
+        self.vgg = Vgg19(requires_grad=False) if self.use_hypercolumn_backbone else None
+        backbone_in_channels = 1475 if self.use_hypercolumn_backbone else 3
+        self.backbone = arch.errnet(backbone_in_channels, 3)
         if pretrained_errnet_path is not None:
             self.load_pretrained_errnet(pretrained_errnet_path)
         if freeze_backbone:
@@ -108,6 +117,19 @@ class RAPERRNet(nn.Module):
                 RuntimeWarning,
             )
 
+    def _build_backbone_input(self, image: torch.Tensor) -> torch.Tensor:
+        if self.vgg is None:
+            return image
+        self.vgg = self.vgg.to(image.device)
+        self.vgg.eval()
+        with torch.no_grad():
+            hypercolumn = self.vgg(image)
+            hypercolumn = [
+                F.interpolate(feature.detach(), size=image.shape[-2:], mode="bilinear", align_corners=False)
+                for feature in hypercolumn
+            ]
+        return torch.cat([image, *hypercolumn], dim=1)
+
     def forward(self, image: torch.Tensor) -> Dict[str, torch.Tensor]:
         if image.ndim != 4 or image.shape[1] != 3:
             raise ValueError(f"RAPERRNet expects input shape [B,3,H,W], got {tuple(image.shape)}.")
@@ -118,7 +140,8 @@ class RAPERRNet(nn.Module):
         else:
             prior = torch.ones((image.shape[0], 1, image.shape[2], image.shape[3]), dtype=image.dtype, device=image.device)
 
-        coarse = self.backbone(image)
+        backbone_input = self._build_backbone_input(image)
+        coarse = self.backbone(backbone_input)
         if coarse.shape[-2:] != image.shape[-2:]:
             coarse = F.interpolate(coarse, size=image.shape[-2:], mode="bilinear", align_corners=False)
         coarse = coarse.clamp(0.0, 1.0)
@@ -139,4 +162,3 @@ class RAPERRNet(nn.Module):
             "prior": prior,
             "residual": residual,
         }
-
