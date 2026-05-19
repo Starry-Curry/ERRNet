@@ -450,3 +450,54 @@ Interpretation:
   not the best main result candidate.
 - The main report should therefore emphasize the hypercolumn pretrained RAP run
   as the primary method and keep this run as a from-scratch reference.
+
+## 13. Hyper-Pretrained RAP Mid Evaluation
+
+Snapshot:
+
+```text
+Checkpoint: checkpoints/rap_errnet_hyper_pretrained_ppu_bs32_mid.pt
+Training source: Alibaba Cloud PPU run, rap_errnet_hyper_pretrained_ppu_bs32
+Training stage: about epoch 37
+Model config: configs/rap_errnet_hyper_pretrained.yaml
+Evaluator: eval_all.py on A6000 GPU1
+```
+
+Evaluation note:
+
+- `ceilnet`, `sir2_objects`, `sir2_postcard`, and `sir2_wild` were evaluated
+  without `--save_images`.
+- `zhang20` OOMed on the 48GB A6000 during full-resolution hypercolumn
+  evaluation. This is an evaluation-memory issue caused by upsampling VGG19
+  hypercolumn features to the original image size, not a checkpoint-loading
+  issue. For final reporting, evaluate `zhang20` on the 98GB PPU or use a
+  carefully documented resized/tiled diagnostic only as an auxiliary result.
+
+Metrics:
+
+| Dataset | RAP-Hyper PSNR | RAP-Hyper SSIM | RAP-Hyper NCC | RAP-Hyper LMSE | Baseline PSNR | Baseline SSIM | Baseline NCC | Baseline LMSE | Reading |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| CEILNet Table 2 | 24.0434 | 0.9081 | 0.9592 | 0.0073 | 27.8765 | 0.9407 | 0.9808 | 0.0048 | Much better than from-scratch RAP, still below pretrained baseline. |
+| Zhang real20 | OOM on A6000 | OOM | OOM | OOM | 23.5531 | 0.8285 | 0.8877 | 0.0201 | Needs PPU/full-memory evaluation. |
+| SIR2 Objects | 25.9135 | 0.9103 | 0.9863 | 0.0025 | 24.8533 | 0.8980 | 0.9817 | 0.0029 | Better than baseline on all metrics. |
+| SIR2 Postcard | 22.3617 | 0.8907 | 0.9534 | 0.0038 | 22.0702 | 0.8773 | 0.9463 | 0.0044 | Better than baseline on all metrics. |
+| SIR2 Wild | 26.1276 | 0.9174 | 0.9586 | 0.0041 | 25.1778 | 0.8861 | 0.9359 | 0.0083 | Strong improvement over baseline. |
+
+Four-dataset average excluding Zhang real20:
+
+| Method | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline ERRNet `--hyper` | 24.9945 | 0.9005 | 0.9612 | 0.0051 |
+| RAP-Hyper mid | 24.6116 | 0.9066 | 0.9644 | 0.0044 |
+
+Interpretation:
+
+- Hyper-pretrained RAP is already a stronger main-result candidate than the
+  3-channel from-scratch RAP.
+- Compared with from-scratch RAP epoch63, CEILNet improves sharply
+  (`19.0772 -> 24.0434` PSNR), confirming that architecture-matched pretrained
+  initialization fixes a major weakness of the first run.
+- On SIR2 Objects/Postcard/Wild, the model beats the pretrained ERRNet baseline
+  on SSIM, NCC, and LMSE, and also improves PSNR on all three subsets.
+- The only unresolved benchmark is Zhang real20, which needs full-memory PPU
+  evaluation before drawing final conclusions.
