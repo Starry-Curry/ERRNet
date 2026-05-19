@@ -371,3 +371,82 @@ Visuals: Input | Output | GT | Error Map | Prior Map
   hypercolumn pretrained ERRNet; use `test_errnet.py --hyper` for baseline
   metrics.
 - Self-collected data is still missing and is required by the course project.
+
+## 11. Dataset Name Mapping
+
+The baseline table in `README_DIP26.md` and `test_errnet.py` uses the original
+course dataset names. `eval_all.py` uses more explicit unified-dataset aliases.
+The underlying processed images are the same when the `data/` symlinks point to
+`datasets/processed_data`.
+
+| Course/Baseline Name | Unified Eval Name | Processed Directory | Meaning |
+| --- | --- | --- | --- |
+| `ceilnet_table2` / CEILNet Table 2 | `ceilnet` | `datasets/processed_data/testdata_CEILNET_table2` | CEILNet synthetic Table 2 test set, 100 pairs. |
+| `real20` | `zhang20` | `datasets/processed_data/real20` | Zhang/Berkeley real reflection test set, 20 pairs. |
+| `objects` | `sir2_objects` | `datasets/processed_data/objects` | SIR2 Objects subset, 200 pairs. |
+| `postcard` | `sir2_postcard` | `datasets/processed_data/postcard` | SIR2 Postcard subset, 179 pairs in the provided package. |
+| `wild` | `sir2_wild` | `datasets/processed_data/wild` | SIR2 Wild subset, 101 pairs in the provided package. |
+
+Baseline reference from the course checkpoint:
+
+```text
+Checkpoint: checkpoints/errnet/errnet_060_00463920.pt
+Evaluator: test_errnet.py --hyper
+```
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table 2 | 27.88 | 0.9407 | 0.9808 | 0.0048 |
+| real20 | 23.55 | 0.8285 | 0.8877 | 0.0201 |
+| objects | 24.85 | 0.8980 | 0.9817 | 0.0029 |
+| postcard | 22.07 | 0.8773 | 0.9463 | 0.0044 |
+| wild | 25.18 | 0.8860 | 0.9359 | 0.0083 |
+
+For reporting, use one naming style consistently. Recommended table labels:
+`CEILNet Table 2`, `Zhang real20`, `SIR2 Objects`, `SIR2 Postcard`, and
+`SIR2 Wild`.
+
+## 12. From-Scratch RAP Epoch63 Evaluation
+
+Snapshot:
+
+```text
+Checkpoint: checkpoints/rap_errnet_main/best_epoch63_snapshot.pt
+Training stage: about epoch 63, from-scratch 3-channel RAP
+Save dir: results/rap_errnet_main_epoch63
+```
+
+Metrics:
+
+| Dataset | RAP PSNR | RAP SSIM | RAP NCC | RAP LMSE | Baseline PSNR | Baseline SSIM | Baseline NCC | Baseline LMSE | Reading |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Average | 22.9937 | 0.8799 | 0.9463 | 0.0058 | - | - | - | - | Slightly improved over the epoch50 snapshot. |
+| CEILNet Table 2 | 19.0772 | 0.8324 | 0.8796 | 0.0131 | 27.8765 | 0.9407 | 0.9808 | 0.0048 | Still much weaker than baseline. |
+| Zhang real20 | 19.6146 | 0.7342 | 0.8193 | 0.0210 | 23.5531 | 0.8285 | 0.8877 | 0.0201 | Improved over epoch50, but still weak. |
+| SIR2 Objects | 25.9151 | 0.9091 | 0.9858 | 0.0027 | 24.8533 | 0.8980 | 0.9817 | 0.0029 | Better than baseline on all metrics. |
+| SIR2 Postcard | 20.9276 | 0.8735 | 0.9493 | 0.0044 | 22.0702 | 0.8773 | 0.9463 | 0.0044 | Mixed; NCC is better, PSNR/SSIM lower. |
+| SIR2 Wild | 25.4174 | 0.9093 | 0.9540 | 0.0045 | 25.1778 | 0.8861 | 0.9359 | 0.0083 | Better than baseline on PSNR/SSIM/NCC/LMSE. |
+
+Epoch63 compared with epoch50:
+
+| Dataset | Epoch50 PSNR | Epoch63 PSNR | Delta |
+| --- | ---: | ---: | ---: |
+| Average | 22.8558 | 22.9937 | +0.1379 |
+| CEILNet Table 2 | 19.0065 | 19.0772 | +0.0707 |
+| Zhang real20 | 19.4201 | 19.6146 | +0.1945 |
+| SIR2 Objects | 25.7091 | 25.9151 | +0.2060 |
+| SIR2 Postcard | 20.9513 | 20.9276 | -0.0237 |
+| SIR2 Wild | 25.0728 | 25.4174 | +0.3446 |
+
+Interpretation:
+
+- From-scratch RAP is still learning after epoch50, with small but consistent
+  gains on average metrics.
+- The improvements concentrate on SIR2 Objects and SIR2 Wild, supporting the
+  claim that the reflection prior and refinement branch help real-scene
+  structure recovery.
+- CEILNet Table 2 and Zhang real20 remain much weaker than the pretrained
+  ERRNet baseline, which confirms that the 3-channel from-scratch backbone is
+  not the best main result candidate.
+- The main report should therefore emphasize the hypercolumn pretrained RAP run
+  as the primary method and keep this run as a from-scratch reference.
