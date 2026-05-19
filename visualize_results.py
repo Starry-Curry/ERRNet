@@ -6,6 +6,8 @@ import argparse
 from pathlib import Path
 from typing import List
 
+from PIL import Image
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create contact sheets from eval_all.py visualizations.")
@@ -27,12 +29,14 @@ def _resize_width(image: Image.Image, width: int) -> Image.Image:
     if image.width == width:
         return image
     height = max(1, int(round(image.height * width / float(image.width))))
-    return image.resize((width, height), Image.BICUBIC)
+    try:
+        resample = Image.Resampling.BICUBIC
+    except AttributeError:  # Pillow < 9
+        resample = Image.BICUBIC
+    return image.resize((width, height), resample)
 
 
 def build_contact_sheet(images: List[Path], output_path: Path, thumb_width: int) -> None:
-    from PIL import Image
-
     loaded = [_resize_width(Image.open(path).convert("RGB"), thumb_width) for path in images]
     if not loaded:
         raise FileNotFoundError("No visualization images were found.")
