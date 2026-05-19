@@ -16,7 +16,8 @@ The project has moved from implementation to experiment production.
 | A6000 environment | Done | ERRNet baseline and RAP debug training both run successfully. |
 | Baseline pretrained evaluation | Mostly done | CEILNet, real20, SIR2 Objects/Postcard/Wild have been evaluated. |
 | RAP main training | Running | `rap_errnet_main`, from scratch, 100 epochs planned. |
-| RAP hyper-pretrained path | Ready for next run | New config uses the same ERRNet `--hyper` 1475-channel backbone as the course baseline. |
+| RAP hyper-pretrained path | Ready | Config uses the same ERRNet `--hyper` 1475-channel backbone as the course baseline. |
+| RAP staged zero-res path | Ready | `configs/rap_errnet_hyper_zerores_staged.yaml` freezes the backbone first, then uses differential LR fine-tuning. |
 | RAP full evaluation | Pending | Run after mid/final checkpoint is available. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
@@ -31,7 +32,7 @@ The project has moved from implementation to experiment production.
 | `de3f3dd` | Added dynamic progress bar for RAP training. |
 | `dde1a8a` | Cleaned progress-bar output so dynamic progress and line logs do not interleave. |
 | `c4d9e5d` | Recorded mid-training RAP evaluation and baseline comparison. |
-| current update | Added optional hypercolumn RAP backbone and hyper-pretrained experiment config. |
+| current update | Added staged zero-residual RAP config, differential LR parameter groups, optional extra training data, anchor/delta losses, and pseudo-mask downweighting. |
 
 ## 3. Environment And Data
 

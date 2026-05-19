@@ -139,7 +139,7 @@ breaks comparability.
 ### 4.3 Extra Data
 
 Use OpenRR-5k or RRW-style real paired data only as an extra-data fine-tuning
-experiment:
+experiment, not as part of the default main comparison:
 
 ```text
 RAP-ERRNet-Hyper-ZeroRes
@@ -148,6 +148,21 @@ RAP-ERRNet-Hyper-ZeroRes + Extra Real Fine-tuning
 
 Report them separately. Mixing extra datasets into the main run would make
 baseline comparison less clean.
+
+The code now supports two explicit extra-data entrances:
+
+```text
+data/openrr5k/train/blended + data/openrr5k/train/transmission
+data/extra_train/blended + data/extra_train/transmission_layer
+```
+
+Enable them only with `--use_openrr` or `--use_extra_train`. This makes the
+ablation boundary clear:
+
+```text
+Main: VOC synthesis + Zhang real train
+Extra: Main + OpenRR or Main + data/extra_train
+```
 
 ## 5. Loss Design
 
@@ -211,6 +226,18 @@ hyper-pretrained training:
 lambda_mask = 0.01
 ```
 
+The implementation now emits `mask_reliable=1` for synthetic or real samples
+with an actual mask and `mask_reliable=0` for pseudo masks. The final staged
+config uses:
+
+```yaml
+lambda_mask: 0.01
+lambda_mask_pseudo_scale: 0.2
+```
+
+So pseudo-mask supervision is still present, but no longer has the same weight
+as reliable synthesis masks.
+
 ### 5.4 Loss Weights For Final Main Run
 
 Recommended starting point:
@@ -251,6 +278,11 @@ batch_size: 32 on PPU, 8-16 on A6000
 Purpose: learn reflection priors and residual corrections without damaging the
 pretrained backbone.
 
+This stage is especially important because current visual diagnostics show that
+RAP sometimes loses CEILNet PSNR through small color/brightness drift. Freezing
+the backbone makes the new modules learn controlled corrections rather than
+rewriting the pretrained ERRNet solution.
+
 ### Stage 2: Full Fine-Tuning
 
 Unfreeze the backbone with a lower learning rate:
@@ -266,6 +298,16 @@ If separate parameter-group LR is not implemented, use a conservative global LR:
 ```text
 lr = 5e-5
 ```
+
+Parameter-group LR is now implemented in `train_rap_errnet.py`. The staged
+config is:
+
+```text
+configs/rap_errnet_hyper_zerores_staged.yaml
+```
+
+It implements `warmup_new_modules` for 20 epochs and
+`conservative_finetune` for 80 epochs.
 
 ### Stage 3: Optional Extra Real Fine-Tuning
 
@@ -336,15 +378,32 @@ short-run ablations.
 
 ## 9. Recommended Next Actions
 
-1. Pull the zero-residual code update on the PPU server.
-2. Start `rap_errnet_hyper_pretrained_zerores_ppu_bs32` with `lr=5e-5`.
-3. Evaluate CEILNet and SIR2 Wild at epoch 20-30.
-4. If CEILNet improves while SIR2 remains strong, keep it as the final main
-   method.
-5. If CEILNet is still weak, implement anchor/delta losses and reduce
-   `lambda_mask` to `0.01`.
+1. Pull the staged zero-residual code update on the PPU server.
+2. Keep the current old run as a useful comparison if it is already far along,
+   but use the staged config for the final main experiment.
+3. Start `rap_errnet_hyper_zerores_staged_ppu_bs32`:
+
+```bash
+python train_rap_errnet.py \
+  --config configs/rap_errnet_hyper_zerores_staged.yaml \
+  --name rap_errnet_hyper_zerores_staged_ppu_bs32 \
+  --data_root ./data \
+  --use_physics_synthesis \
+  --use_prior_head \
+  --use_gated_blocks \
+  --use_refinement \
+  --batch_size 32 \
+  --num_workers 8 \
+  --device auto \
+  --progress_bar
+```
+
+4. Evaluate after Stage 1 and again after Stage 2. If CEILNet remains below the
+   baseline but SIR2 improves, report the tradeoff and use the anchor/no-anchor
+   ablation to explain it.
+5. Only after the main staged result is stable, run an extra-data fine-tuning
+   experiment with `--use_openrr` or `--use_extra_train`.
 6. Generate qualitative comparisons for CEILNet and SIR2 Wild.
-7. Only after main results are stable, run extra-data fine-tuning.
 
 ## 10. Report Claim
 
@@ -357,4 +416,3 @@ Suggested final claim:
 > method is especially effective on real-world SIR2 subsets, improving structural
 > and local metrics, while conservative anchoring is used to avoid degrading
 > synthetic paired benchmarks such as CEILNet.
-

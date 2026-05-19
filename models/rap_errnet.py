@@ -147,6 +147,7 @@ class RAPERRNet(nn.Module):
         if coarse.shape[-2:] != image.shape[-2:]:
             coarse = F.interpolate(coarse, size=image.shape[-2:], mode="bilinear", align_corners=False)
         coarse = coarse.clamp(0.0, 1.0)
+        backbone_output = coarse
 
         if self.gated_adapter is not None:
             coarse = self.gated_adapter(coarse, prior)
@@ -160,6 +161,7 @@ class RAPERRNet(nn.Module):
         output = torch.clamp(coarse + residual, 0.0, 1.0)
         return {
             "output": output,
+            "backbone_output": backbone_output,
             "coarse": coarse,
             "prior": prior,
             "residual": residual,

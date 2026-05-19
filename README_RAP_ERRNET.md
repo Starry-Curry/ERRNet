@@ -60,12 +60,17 @@ data/
     train/transmission/
     val/blended/
     val/transmission/
+  extra_train/
+    blended/
+    transmission_layer/
   self_collected/test/scene_001/
     blended.png
     transmission.png
 ```
 
 Reference links: ERRNet fork `https://github.com/innerway-xq/ERRNet`, PASCAL VOC 2012 official page, Zhang/Berkeley reflection dataset `https://github.com/ceciliavision/perceptual-reflection-removal`, CEILNet `https://github.com/fqnchina/CEILNet`, SIR2 `https://sir2data.github.io/`, OpenRR-5k `https://github.com/caijie0620/OpenRR-5k`.
+
+Training-data rule for the main report: use VOC physics synthesis plus Zhang/Berkeley real train. Do not train on CEILNet Table 2, Zhang real20, SIR2 Objects/Postcard/Wild, or self-collected test images. OpenRR or `extra_train` should be reported as a separate extra-data fine-tuning experiment.
 
 ## 5. Windows Local Development
 
@@ -145,6 +150,53 @@ python eval_all.py \
 ```
 
 The `--config` argument is required during evaluation for hypercolumn RAP checkpoints, because the model must be reconstructed with the same 1475-channel backbone used during training.
+
+Recommended final run with conservative staged fine-tuning:
+
+```bash
+python train_rap_errnet.py \
+  --config configs/rap_errnet_hyper_zerores_staged.yaml \
+  --name rap_errnet_hyper_zerores_staged \
+  --data_root ./data \
+  --use_physics_synthesis \
+  --use_prior_head \
+  --use_gated_blocks \
+  --use_refinement \
+  --batch_size 32 \
+  --num_workers 8 \
+  --device auto \
+  --progress_bar
+```
+
+This config uses:
+
+```text
+Stage 1: freeze ERRNet backbone, train prior/gating/refinement, lr=1e-4, 20 epochs
+Stage 2: unfreeze backbone, backbone lr=1e-5, new-module lr=5e-5, 80 epochs
+```
+
+It also adds baseline-anchor and residual-size regularization, and downweights pseudo masks from real paired data without ground-truth masks.
+
+Optional extra-data fine-tuning should be launched as a separate run:
+
+```bash
+python train_rap_errnet.py \
+  --config configs/rap_errnet_hyper_zerores_staged.yaml \
+  --name rap_errnet_hyper_zerores_staged_extra \
+  --data_root ./data \
+  --use_physics_synthesis \
+  --use_prior_head \
+  --use_gated_blocks \
+  --use_refinement \
+  --use_extra_train \
+  --max_extra_pairs 1000 \
+  --batch_size 32 \
+  --num_workers 8 \
+  --device auto \
+  --progress_bar
+```
+
+For OpenRR-5k, use `--use_openrr --max_openrr_pairs 1000` instead of `--use_extra_train`. Keep the no-extra and extra-data results in separate tables.
 
 To save qualitative comparisons against the course ERRNet baseline in one image,
 add the baseline checkpoint:

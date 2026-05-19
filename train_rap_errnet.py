@@ -11,6 +11,7 @@ import csv
 import random
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
@@ -43,6 +44,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_hypercolumn_backbone", action="store_true", help="disable ERRNet --hyper VGG feature backbone")
     parser.add_argument("--use_openrr", action="store_true", help="include OpenRR train pairs if available")
     parser.add_argument("--max_openrr_pairs", type=int, default=None, help="limit OpenRR training pairs")
+    parser.add_argument("--use_extra_train", action="store_true", help="include generic data/extra_train paired data if available")
+    parser.add_argument("--max_extra_pairs", type=int, default=None, help="limit generic extra_train pairs")
+    parser.add_argument("--backbone_lr", type=float, default=None, help="learning rate for ERRNet backbone parameter group")
+    parser.add_argument("--new_lr", type=float, default=None, help="learning rate for RAP prior/gating/refinement parameter group")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="training device")
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--log_interval", type=int, default=50, help="batches between training progress prints")
@@ -162,6 +167,20 @@ def build_train_dataset(args: argparse.Namespace, cfg: Mapping[str, Any]):
         else:
             missing_reasons.append("OpenRR train requested but unavailable")
 
+    if args.use_extra_train or bool(data_cfg.get("use_extra_train", False)):
+        if available.get("extra_train", False):
+            datasets.append(
+                UnifiedReflectionDataset(
+                    data_root,
+                    "extra_train",
+                    crop_size=crop_size,
+                    image_size=image_size,
+                    max_pairs=args.max_extra_pairs,
+                )
+            )
+        else:
+            missing_reasons.append("extra_train requested but unavailable")
+
     if not datasets:
         detail = "; ".join(missing_reasons) if missing_reasons else "no supported training datasets found"
         raise FileNotFoundError(f"No training data was found under {data_root}: {detail}.")
@@ -178,7 +197,10 @@ def move_batch_to_device(batch: Mapping[str, Any], device) -> Dict[str, Any]:
     return moved
 
 
-def save_checkpoint(path: Path, model, optimizer, epoch: int, best_loss: float) -> None:
+LOSS_KEYS = ["total", "pix", "perc", "grad", "ssim", "mask", "clean", "anchor", "delta", "excl"]
+
+
+def save_checkpoint(path: Path, model, optimizer, epoch: int, best_loss: float, stage: Mapping[str, Any] | None = None) -> None:
     import torch
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,6 +210,7 @@ def save_checkpoint(path: Path, model, optimizer, epoch: int, best_loss: float) 
             "optimizer": optimizer.state_dict(),
             "epoch": epoch,
             "best_loss": best_loss,
+            "stage": dict(stage or {}),
         },
         path,
     )
@@ -197,10 +220,134 @@ def append_log(path: Path, row: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists()
     with path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["epoch", "total", "pix", "perc", "grad", "ssim", "mask", "clean", "excl"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "epoch",
+                "stage",
+                "total",
+                "pix",
+                "perc",
+                "grad",
+                "ssim",
+                "mask",
+                "clean",
+                "anchor",
+                "delta",
+                "excl",
+            ],
+        )
         if not exists:
             writer.writeheader()
         writer.writerow(row)
+
+
+def _build_training_stages(train_cfg: Mapping[str, Any], args: argparse.Namespace, total_epochs: int) -> List[Dict[str, Any]]:
+    stages_cfg = train_cfg.get("stages", [])
+    if not stages_cfg:
+        lr = float(args.lr or train_cfg.get("lr", 1.0e-4))
+        return [
+            {
+                "name": "main",
+                "start": 0,
+                "end": total_epochs,
+                "freeze_backbone": bool(train_cfg.get("freeze_backbone", False)),
+                "lr": lr,
+                "backbone_lr": float(args.backbone_lr if args.backbone_lr is not None else train_cfg.get("backbone_lr", lr)),
+                "new_lr": float(args.new_lr if args.new_lr is not None else train_cfg.get("new_lr", lr)),
+            }
+        ]
+
+    stages: List[Dict[str, Any]] = []
+    start = 0
+    for index, stage_cfg in enumerate(stages_cfg):
+        stage = dict(stage_cfg)
+        duration = int(stage.get("epochs", 0))
+        if duration <= 0:
+            raise ValueError(f"train.stages[{index}].epochs must be positive, got {duration}.")
+        end = min(total_epochs, start + duration)
+        lr = float(args.lr or stage.get("lr", train_cfg.get("lr", 1.0e-4)))
+        stage.update(
+            {
+                "name": str(stage.get("name", f"stage{index + 1}")),
+                "start": start,
+                "end": end,
+                "freeze_backbone": bool(stage.get("freeze_backbone", False)),
+                "lr": lr,
+                "backbone_lr": float(
+                    args.backbone_lr
+                    if args.backbone_lr is not None
+                    else stage.get("backbone_lr", train_cfg.get("backbone_lr", lr))
+                ),
+                "new_lr": float(
+                    args.new_lr
+                    if args.new_lr is not None
+                    else stage.get("new_lr", train_cfg.get("new_lr", lr))
+                ),
+            }
+        )
+        stages.append(stage)
+        start = end
+        if start >= total_epochs:
+            break
+
+    if not stages:
+        raise ValueError("No active training stages were configured.")
+    if stages[-1]["end"] < total_epochs:
+        tail = dict(stages[-1])
+        tail["start"] = stages[-1]["end"]
+        tail["end"] = total_epochs
+        tail["name"] = f"{tail['name']}_extended"
+        stages.append(tail)
+    return stages
+
+
+def _stage_for_epoch(epoch: int, stages: List[Mapping[str, Any]]) -> tuple[int, Mapping[str, Any]]:
+    for index, stage in enumerate(stages):
+        if int(stage["start"]) <= epoch < int(stage["end"]):
+            return index, stage
+    return len(stages) - 1, stages[-1]
+
+
+def _set_requires_grad(module, enabled: bool) -> None:
+    if module is None:
+        return
+    for param in module.parameters():
+        param.requires_grad = enabled
+
+
+def _apply_training_stage(model, stage: Mapping[str, Any]) -> None:
+    freeze_backbone = bool(stage.get("freeze_backbone", False))
+    _set_requires_grad(getattr(model, "backbone", None), not freeze_backbone)
+    _set_requires_grad(getattr(model, "prior_head", None), True)
+    _set_requires_grad(getattr(model, "gated_adapter", None), True)
+    _set_requires_grad(getattr(model, "refinement", None), True)
+    _set_requires_grad(getattr(model, "vgg", None), False)
+
+
+def _build_optimizer(model, stage: Mapping[str, Any], train_cfg: Mapping[str, Any]):
+    import torch
+
+    weight_decay = float(train_cfg.get("weight_decay", train_cfg.get("wd", 0.0)))
+    param_groups = []
+    backbone_params = [p for p in getattr(model, "backbone").parameters() if p.requires_grad]
+    if backbone_params:
+        param_groups.append({"params": backbone_params, "lr": float(stage.get("backbone_lr", stage.get("lr", 1.0e-4)))})
+
+    new_params = []
+    for module_name in ("prior_head", "gated_adapter", "refinement"):
+        module = getattr(model, module_name, None)
+        if module is not None:
+            new_params.extend(p for p in module.parameters() if p.requires_grad)
+    if new_params:
+        param_groups.append({"params": new_params, "lr": float(stage.get("new_lr", stage.get("lr", 1.0e-4)))})
+
+    if not param_groups:
+        raise RuntimeError("No trainable parameters are active for the current training stage.")
+    optimizer_name = str(train_cfg.get("optimizer", "adam")).lower()
+    if optimizer_name != "adam":
+        warnings.warn(f"Unsupported optimizer '{optimizer_name}', falling back to Adam.", RuntimeWarning)
+    return torch.optim.Adam(param_groups, weight_decay=weight_decay)
 
 
 def _format_seconds(seconds: float) -> str:
@@ -269,32 +416,63 @@ def main() -> None:
 
     model = build_model(args, cfg).to(device)
     criterion = ReflectionRemovalLoss(cfg)
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(args.lr or train_cfg.get("lr", 1.0e-4)))
+    epochs = int(args.epochs or train_cfg.get("epochs", 100))
+    stages = _build_training_stages(train_cfg, args, epochs)
+    optimizer = None
+    active_stage_index = None
+    optimizer_restored = False
+    pending_optimizer_state = None
 
     start_epoch = 0
     best_loss = float("inf")
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint["model"], strict=False)
-        optimizer.load_state_dict(checkpoint["optimizer"])
+        pending_optimizer_state = checkpoint.get("optimizer")
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
         best_loss = float(checkpoint.get("best_loss", best_loss))
 
     save_dir = Path("checkpoints") / args.name
     log_path = save_dir / "train_log.csv"
-    epochs = int(args.epochs or train_cfg.get("epochs", 100))
+    for stage in stages:
+        print(
+            f"[i] stage {stage['name']}: epochs {int(stage['start']) + 1}-{int(stage['end'])}, "
+            f"freeze_backbone={bool(stage.get('freeze_backbone', False))} "
+            f"backbone_lr={float(stage.get('backbone_lr', stage.get('lr', 1.0e-4))):.2e} "
+            f"new_lr={float(stage.get('new_lr', stage.get('lr', 1.0e-4))):.2e}"
+        )
 
     for epoch in range(start_epoch, epochs):
+        stage_index, stage = _stage_for_epoch(epoch, stages)
+        if stage_index != active_stage_index:
+            _apply_training_stage(model, stage)
+            optimizer = _build_optimizer(model, stage, train_cfg)
+            active_stage_index = stage_index
+            print(f"[i] entering stage {stage['name']} at epoch {epoch + 1}")
+            if pending_optimizer_state is not None and not optimizer_restored:
+                try:
+                    optimizer.load_state_dict(pending_optimizer_state)
+                    optimizer_restored = True
+                    print("[i] optimizer state restored from checkpoint")
+                except ValueError as exc:
+                    warnings.warn(
+                        f"Could not restore optimizer state after stage setup; continuing with a fresh optimizer: {exc}",
+                        RuntimeWarning,
+                    )
+                    optimizer_restored = True
+
         model.train()
-        running = {"total": 0.0, "pix": 0.0, "perc": 0.0, "grad": 0.0, "ssim": 0.0, "mask": 0.0, "clean": 0.0, "excl": 0.0}
+        running = {key: 0.0 for key in LOSS_KEYS}
         steps = 0
         epoch_start_time = time.time()
         last_progress_time = 0.0
-        print(f"[i] epoch {epoch + 1}/{epochs} started")
+        print(f"[i] epoch {epoch + 1}/{epochs} started ({stage['name']})")
         for batch_idx, batch in enumerate(loader, start=1):
             batch = move_batch_to_device(batch, device)
             outputs = model(batch["input"])
             losses = criterion(outputs, batch)
+            if optimizer is None:
+                raise RuntimeError("Optimizer was not initialized.")
             optimizer.zero_grad(set_to_none=True)
             losses["total"].backward()
             optimizer.step()
@@ -302,7 +480,9 @@ def main() -> None:
             steps += 1
             current_total = float(losses["total"].detach().cpu())
             for key in running:
-                running[key] += float(losses[key].detach().cpu())
+                value = losses.get(key)
+                if value is not None:
+                    running[key] += float(value.detach().cpu())
             should_finish_progress = batch_idx == len(loader) or (args.debug and steps >= 3)
             if args.progress_bar:
                 if time.time() - last_progress_time >= args.progress_interval or should_finish_progress:
@@ -339,12 +519,16 @@ def main() -> None:
         if steps == 0:
             raise RuntimeError("Training dataloader produced zero batches.")
         avg = {key: value / steps for key, value in running.items()}
-        append_log(log_path, {"epoch": epoch, **avg})
-        save_checkpoint(save_dir / "latest.pt", model, optimizer, epoch, best_loss)
+        append_log(log_path, {"epoch": epoch, "stage": stage["name"], **avg})
+        save_checkpoint(save_dir / "latest.pt", model, optimizer, epoch, best_loss, stage=stage)
         if avg["total"] < best_loss:
             best_loss = avg["total"]
-            save_checkpoint(save_dir / "best.pt", model, optimizer, epoch, best_loss)
-        print(f"epoch={epoch} total={avg['total']:.6f} pix={avg['pix']:.6f} grad={avg['grad']:.6f}")
+            save_checkpoint(save_dir / "best.pt", model, optimizer, epoch, best_loss, stage=stage)
+        print(
+            f"epoch={epoch} stage={stage['name']} total={avg['total']:.6f} "
+            f"pix={avg['pix']:.6f} grad={avg['grad']:.6f} "
+            f"anchor={avg['anchor']:.6f} delta={avg['delta']:.6f}"
+        )
 
 
 if __name__ == "__main__":

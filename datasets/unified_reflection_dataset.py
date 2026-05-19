@@ -31,6 +31,7 @@ DATASET_PATHS = {
     "sir2_wild": Path("sir2") / "Wild",
     "openrr_train": Path("openrr5k") / "train",
     "openrr_val": Path("openrr5k") / "val",
+    "extra_train": Path("extra_train"),
     "self": Path("self_collected") / "test",
 }
 
@@ -306,6 +307,7 @@ class UnifiedReflectionDataset(Dataset):
             }
         sample["name"] = t_path.stem
         sample["dataset"] = self.dataset
+        sample["mask_reliable"] = torch.ones(1, dtype=sample["mask"].dtype)
         return sample
 
     def _load_pair_sample(self, index: int) -> Dict[str, torch.Tensor | str]:
@@ -321,13 +323,16 @@ class UnifiedReflectionDataset(Dataset):
                 mask_img = mask_img.resize(size, Image.BICUBIC)
             mask_img = _center_crop(mask_img, self.crop_size)
             mask = _to_mask_tensor(mask_img)
+            mask_reliable = torch.ones(1, dtype=mask.dtype)
         else:
             mask = _pseudo_mask(input_tensor, target_tensor)
+            mask_reliable = torch.zeros(1, dtype=mask.dtype)
         return {
             "input": input_tensor,
             "target": target_tensor,
             "reflection": (input_tensor - target_tensor).clamp(0.0, 1.0),
             "mask": mask,
+            "mask_reliable": mask_reliable,
             "name": input_path.stem,
             "dataset": self.dataset,
         }
