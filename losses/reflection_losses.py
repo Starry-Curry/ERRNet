@@ -60,6 +60,57 @@ def gradient_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return F.l1_loss(pred_dx, target_dx) + F.l1_loss(pred_dy, target_dy)
 
 
+def _gaussian_kernel1d(sigma: float, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    sigma = max(float(sigma), 1e-3)
+    radius = max(1, int(round(3.0 * sigma)))
+    coords = torch.arange(-radius, radius + 1, dtype=dtype, device=device)
+    kernel = torch.exp(-(coords**2) / (2.0 * sigma * sigma))
+    return kernel / kernel.sum().clamp_min(1e-12)
+
+
+def gaussian_blur_batch(image: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Apply depth-wise Gaussian blur to a BCHW tensor."""
+
+    if sigma <= 0:
+        return image
+    if image.ndim != 4:
+        raise ValueError(f"gaussian_blur_batch expects [B,C,H,W], got {tuple(image.shape)}.")
+    channels = image.shape[1]
+    kernel = _gaussian_kernel1d(sigma, image.dtype, image.device)
+    radius = kernel.numel() // 2
+    kernel_x = kernel.view(1, 1, 1, -1).repeat(channels, 1, 1, 1)
+    kernel_y = kernel.view(1, 1, -1, 1).repeat(channels, 1, 1, 1)
+    x = F.pad(image, (radius, radius, 0, 0), mode="replicate")
+    x = F.conv2d(x, kernel_x, groups=channels)
+    x = F.pad(x, (0, 0, radius, radius), mode="replicate")
+    return F.conv2d(x, kernel_y, groups=channels)
+
+
+def frequency_selective_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    prior: torch.Tensor,
+    *,
+    sigma: float = 3.0,
+    low_weight: float = 1.0,
+    high_weight: float = 0.5,
+    prior_weight: float = 0.0,
+) -> torch.Tensor:
+    """Low/high frequency supervision for veil and ghost reflection errors."""
+
+    pred_low = gaussian_blur_batch(pred, sigma)
+    target_low = gaussian_blur_batch(target, sigma)
+    pred_high = pred - pred_low
+    target_high = target - target_low
+    weight = 1.0
+    if prior_weight > 0:
+        prior = prior.to(device=pred.device, dtype=pred.dtype).clamp(0.0, 1.0)
+        weight = 1.0 + float(prior_weight) * prior
+    low = torch.mean(weight * torch.abs(pred_low - target_low))
+    high = torch.mean(weight * torch.abs(pred_high - target_high))
+    return float(low_weight) * low + float(high_weight) * high
+
+
 def ssim_loss(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11, data_range: float = 1.0) -> torch.Tensor:
     """Differentiable SSIM loss using local average windows."""
 
@@ -211,6 +262,11 @@ class ReflectionRemovalLoss(nn.Module):
         self.lambda_clean = float(_get_config_value(config, "lambda_clean", 0.05))
         self.lambda_anchor = float(_get_config_value(config, "lambda_anchor", 0.0))
         self.lambda_delta = float(_get_config_value(config, "lambda_delta", 0.0))
+        self.lambda_freq = float(_get_config_value(config, "lambda_freq", 0.0))
+        self.lambda_freq_low = float(_get_config_value(config, "lambda_freq_low", 1.0))
+        self.lambda_freq_high = float(_get_config_value(config, "lambda_freq_high", 0.5))
+        self.freq_sigma = float(_get_config_value(config, "freq_sigma", 3.0))
+        self.freq_prior_weight = float(_get_config_value(config, "freq_prior_weight", 0.0))
         self.lambda_excl = float(_get_config_value(config, "lambda_excl", 0.0))
         self.lambda_reflection_weight = float(_get_config_value(config, "lambda_reflection_weight", 2.0))
         self.perceptual = OptionalPerceptualLoss(
@@ -255,6 +311,19 @@ class ReflectionRemovalLoss(nn.Module):
         anchor_base = outputs.get("backbone_output", outputs.get("coarse", pred))
         anchor = baseline_anchor_loss(pred, anchor_base, prior) if self.lambda_anchor > 0 else pred.new_tensor(0.0)
         delta = residual_magnitude_loss(pred, anchor_base) if self.lambda_delta > 0 else pred.new_tensor(0.0)
+        freq = (
+            frequency_selective_loss(
+                pred,
+                target,
+                prior,
+                sigma=self.freq_sigma,
+                low_weight=self.lambda_freq_low,
+                high_weight=self.lambda_freq_high,
+                prior_weight=self.freq_prior_weight,
+            )
+            if self.lambda_freq > 0
+            else pred.new_tensor(0.0)
+        )
         excl = exclusion_loss(input_image, pred) if self.lambda_excl > 0 else pred.new_tensor(0.0)
 
         total = (
@@ -266,6 +335,7 @@ class ReflectionRemovalLoss(nn.Module):
             + self.lambda_clean * clean
             + self.lambda_anchor * anchor
             + self.lambda_delta * delta
+            + self.lambda_freq * freq
             + self.lambda_excl * excl
         )
         return {
@@ -278,5 +348,6 @@ class ReflectionRemovalLoss(nn.Module):
             "clean": clean,
             "anchor": anchor,
             "delta": delta,
+            "freq": freq,
             "excl": excl,
         }

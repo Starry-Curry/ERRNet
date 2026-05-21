@@ -222,6 +222,64 @@ The visualization order becomes:
 Input | Baseline | Output | GT | Error Map | Prior Map
 ```
 
+### BP-RAP-ERRNet v1.3 Optional Losses
+
+`BP-RAP-ERRNet` keeps the v1.2 zero-residual, baseline-preserving model as the
+default path, then adds two opt-in losses for follow-up ablations:
+
+- `--use_ric`: reflection-invariant consistency on VOC physics-synthesis
+  samples. For the same clean transmission, the trainer synthesizes a second
+  reflection variant and penalizes disagreement between the two predictions.
+- `--use_freq_loss`: frequency-selective supervision. Low-frequency error
+  targets veil/color drift, and high-frequency error targets edge/ghost
+  artifacts. This is intentionally disabled unless the flag is passed.
+
+Recommended short RIC fine-tune from an existing hyper-pretrained checkpoint:
+
+```bash
+python train_rap_errnet.py \
+  --config configs/bp_rap_hyper_zerores_staged_ric.yaml \
+  --name bp_rap_hyper_ric_ft_from_hyper_ppu_bs32 \
+  --resume checkpoints/rap_errnet_hyper_pretrained_ppu_bs32/best.pt \
+  --resume_model_only \
+  --data_root ./data \
+  --use_physics_synthesis \
+  --use_prior_head \
+  --use_gated_blocks \
+  --use_refinement \
+  --use_ric \
+  --batch_size 24 \
+  --epochs 20 \
+  --num_workers 8 \
+  --device auto \
+  --log_interval 50
+```
+
+RIC+frequency should be run only after the RIC-only result is checked:
+
+```bash
+python train_rap_errnet.py \
+  --config configs/bp_rap_hyper_zerores_staged_ric_freq.yaml \
+  --name bp_rap_hyper_ric_freq_ft_from_hyper_ppu_bs24 \
+  --resume checkpoints/rap_errnet_hyper_pretrained_ppu_bs32/best.pt \
+  --resume_model_only \
+  --data_root ./data \
+  --use_physics_synthesis \
+  --use_prior_head \
+  --use_gated_blocks \
+  --use_refinement \
+  --use_ric \
+  --use_freq_loss \
+  --batch_size 24 \
+  --epochs 20 \
+  --num_workers 8 \
+  --device auto \
+  --log_interval 50
+```
+
+Because RIC adds an extra forward pass for selected VOC samples, start with
+`batch_size=24` on the PPU. If memory is stable, increase to 32.
+
 ## 9. Ablation Commands
 
 ```bash

@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_extra_pairs", type=int, default=None, help="limit generic extra_train pairs")
     parser.add_argument("--backbone_lr", type=float, default=None, help="learning rate for ERRNet backbone parameter group")
     parser.add_argument("--new_lr", type=float, default=None, help="learning rate for RAP prior/gating/refinement parameter group")
+    parser.add_argument("--use_ric", action="store_true", help="enable reflection-invariant consistency loss")
+    parser.add_argument("--use_freq_loss", action="store_true", help="enable frequency-selective supervision loss")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="training device")
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--log_interval", type=int, default=50, help="batches between training progress prints")
@@ -66,6 +68,32 @@ def load_config(path: str | Path) -> Dict[str, Any]:
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
     with cfg_path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+def configure_optional_losses(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Keep v1.3 losses opt-in even when a config contains their weights."""
+
+    cfg = dict(cfg)
+    loss_cfg = dict(cfg.get("loss", {}))
+    if args.use_ric:
+        if float(loss_cfg.get("lambda_ric", 0.0)) <= 0:
+            loss_cfg["lambda_ric"] = 0.03
+        loss_cfg.setdefault("ric_prob", 0.5)
+        loss_cfg.setdefault("ric_prior_weight", 1.0)
+    else:
+        loss_cfg["lambda_ric"] = 0.0
+
+    if args.use_freq_loss:
+        if float(loss_cfg.get("lambda_freq", 0.0)) <= 0:
+            loss_cfg["lambda_freq"] = 0.03
+        loss_cfg.setdefault("lambda_freq_low", 1.0)
+        loss_cfg.setdefault("lambda_freq_high", 0.5)
+        loss_cfg.setdefault("freq_sigma", 3.0)
+        loss_cfg.setdefault("freq_prior_weight", 1.0)
+    else:
+        loss_cfg["lambda_freq"] = 0.0
+    cfg["loss"] = loss_cfg
+    return cfg
 
 
 def choose_device(name: str) -> torch.device:
@@ -198,7 +226,7 @@ def move_batch_to_device(batch: Mapping[str, Any], device) -> Dict[str, Any]:
     return moved
 
 
-LOSS_KEYS = ["total", "pix", "perc", "grad", "ssim", "mask", "clean", "anchor", "delta", "excl"]
+LOSS_KEYS = ["total", "pix", "perc", "grad", "ssim", "mask", "clean", "anchor", "delta", "freq", "ric", "excl"]
 
 
 def save_checkpoint(path: Path, model, optimizer, epoch: int, best_loss: float, stage: Mapping[str, Any] | None = None) -> None:
@@ -235,6 +263,8 @@ def append_log(path: Path, row: Mapping[str, Any]) -> None:
                 "clean",
                 "anchor",
                 "delta",
+                "freq",
+                "ric",
                 "excl",
             ],
         )
@@ -351,6 +381,71 @@ def _build_optimizer(model, stage: Mapping[str, Any], train_cfg: Mapping[str, An
     return torch.optim.Adam(param_groups, weight_decay=weight_decay)
 
 
+def _batch_dataset_names(batch: Mapping[str, Any], batch_size: int) -> List[str]:
+    names = batch.get("dataset", "")
+    if isinstance(names, str):
+        return [names] * batch_size
+    if isinstance(names, (list, tuple)):
+        return [str(name) for name in names]
+    return [str(names)] * batch_size
+
+
+def _build_ric_inputs(batch: Mapping[str, Any], device, synthesis_config: Mapping[str, Any]) -> tuple[Any, Any]:
+    import torch
+
+    from datasets.reflection_synthesis import synthesize_reflection_pair
+
+    target = batch.get("target")
+    if not isinstance(target, torch.Tensor):
+        return None, None
+    names = _batch_dataset_names(batch, int(target.shape[0]))
+    voc_indices = [index for index, name in enumerate(names) if name == "voc"]
+    if not voc_indices:
+        return None, None
+
+    selected = torch.tensor(voc_indices, dtype=torch.long, device=device)
+    target_cpu = target.detach().cpu()
+    if len(voc_indices) > 1:
+        reflection_pool = target_cpu[voc_indices].roll(shifts=1, dims=0)
+    else:
+        reflection = batch.get("reflection")
+        if isinstance(reflection, torch.Tensor):
+            reflection_pool = reflection.detach().cpu()[voc_indices]
+        else:
+            reflection_pool = target_cpu[voc_indices]
+
+    ric_inputs = []
+    for local_index, batch_index in enumerate(voc_indices):
+        seed = random.randint(0, 2**31 - 1)
+        sample = synthesize_reflection_pair(
+            target_cpu[batch_index],
+            reflection_pool[local_index],
+            seed=seed,
+            config=synthesis_config,
+        )
+        ric_inputs.append(sample["input"])
+    return selected, torch.stack(ric_inputs, dim=0).to(device, non_blocking=True)
+
+
+def reflection_invariant_consistency_loss(
+    outputs_a: Mapping[str, Any],
+    outputs_b: Mapping[str, Any],
+    indices,
+    prior_weight: float,
+) -> Any:
+    import torch
+
+    pred_a = outputs_a["output"].index_select(0, indices)
+    pred_b = outputs_b["output"]
+    diff = torch.abs(pred_a - pred_b)
+    if prior_weight > 0:
+        prior_a = outputs_a["prior"].index_select(0, indices)
+        prior_b = outputs_b["prior"]
+        prior = 0.5 * (prior_a + prior_b)
+        diff = (1.0 + float(prior_weight) * prior) * diff
+    return diff.mean()
+
+
 def _format_seconds(seconds: float) -> str:
     seconds = max(0, int(seconds))
     hours, remainder = divmod(seconds, 3600)
@@ -398,9 +493,18 @@ def main() -> None:
 
     from losses.reflection_losses import ReflectionRemovalLoss
 
-    cfg = load_config(args.config)
+    cfg = configure_optional_losses(load_config(args.config), args)
     train_cfg = dict(cfg.get("train", {}))
     data_cfg = dict(cfg.get("data", {}))
+    loss_cfg = dict(cfg.get("loss", {}))
+    lambda_ric = float(loss_cfg.get("lambda_ric", 0.0))
+    ric_prob = float(loss_cfg.get("ric_prob", 0.0))
+    ric_prior_weight = float(loss_cfg.get("ric_prior_weight", 0.0))
+    if lambda_ric > 0 and not args.use_physics_synthesis:
+        warnings.warn(
+            "RIC is enabled but --use_physics_synthesis is off; RIC will be skipped because it only applies to VOC synthetic samples.",
+            RuntimeWarning,
+        )
 
     seed = int(train_cfg.get("seed", 42))
     set_seed(seed)
@@ -475,6 +579,13 @@ def main() -> None:
             batch = move_batch_to_device(batch, device)
             outputs = model(batch["input"])
             losses = criterion(outputs, batch)
+            if lambda_ric > 0 and ric_prob > 0 and random.random() < ric_prob:
+                ric_indices, ric_input = _build_ric_inputs(batch, device, cfg.get("synthesis", {}))
+                if ric_indices is not None and ric_input is not None:
+                    ric_outputs = model(ric_input)
+                    ric = reflection_invariant_consistency_loss(outputs, ric_outputs, ric_indices, ric_prior_weight)
+                    losses["ric"] = ric
+                    losses["total"] = losses["total"] + lambda_ric * ric
             if optimizer is None:
                 raise RuntimeError("Optimizer was not initialized.")
             optimizer.zero_grad(set_to_none=True)
@@ -531,7 +642,8 @@ def main() -> None:
         print(
             f"epoch={epoch} stage={stage['name']} total={avg['total']:.6f} "
             f"pix={avg['pix']:.6f} grad={avg['grad']:.6f} "
-            f"anchor={avg['anchor']:.6f} delta={avg['delta']:.6f}"
+            f"anchor={avg['anchor']:.6f} delta={avg['delta']:.6f} "
+            f"freq={avg['freq']:.6f} ric={avg['ric']:.6f}"
         )
 
 
