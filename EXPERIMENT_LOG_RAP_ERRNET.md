@@ -1,6 +1,6 @@
 # RAP-ERRNet Experiment Log
 
-Last updated: 2026-05-19
+Last updated: 2026-05-21
 
 This document records the implementation and experiment progress for the course
 project method **RAP-ERRNet: Reflection-Aware Physics-guided ERRNet**.
@@ -18,6 +18,8 @@ The project has moved from implementation to experiment production.
 | RAP main training | Running | `rap_errnet_main`, from scratch, 100 epochs planned. |
 | RAP hyper-pretrained path | Ready | Config uses the same ERRNet `--hyper` 1475-channel backbone as the course baseline. |
 | RAP staged zero-res path | Ready | `configs/rap_errnet_hyper_zerores_staged.yaml` freezes the backbone first, then uses differential LR fine-tuning. |
+| BP-RAP v1.3 RIC path | Evaluated | RIC-only short fine-tune from RAP-Hyper is complete and recorded in Section 7.4. |
+| BP-RAP v1.3 RIC+FSS path | Ready | Implemented as an optional ablation, but should only be run after deciding whether RIC-only is worth extending. |
 | RAP extra-data fine-tune path | Ready | `configs/rap_errnet_hyper_zerores_extra_finetune.yaml` resumes model weights with reset epoch/optimizer for short OpenRR or `extra_train` adaptation. |
 | RAP full evaluation | Pending | Run after mid/final checkpoint is available. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
@@ -34,6 +36,8 @@ The project has moved from implementation to experiment production.
 | `dde1a8a` | Cleaned progress-bar output so dynamic progress and line logs do not interleave. |
 | `c4d9e5d` | Recorded mid-training RAP evaluation and baseline comparison. |
 | current update | Added staged zero-residual RAP config, differential LR parameter groups, optional extra training data, anchor/delta losses, and pseudo-mask downweighting. |
+| `5adc327` | Added BP-RAP v1.3 optional RIC and frequency-selective losses, configs, and design plan. |
+| `096b7d7` | Fixed `scripts/sanity_zerores.py` import path for direct script execution. |
 
 ## 3. Environment And Data
 
@@ -353,6 +357,66 @@ Interpretation:
   result and report Hyper-ZeroRes-Staged as a conservative ablation. The staged
   run is useful evidence that the project explored baseline-preserving training,
   but it is not the best final checkpoint.
+
+## 7.4 BP-RAP v1.3 RIC-Only Short Fine-Tune Result
+
+Snapshot:
+
+```text
+Checkpoint: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Training source: resumed model-only from checkpoints/rap_errnet_hyper_pretrained_ppu_bs32/best.pt
+Training stage: 20 epochs, warmup_new_modules only, backbone frozen
+Config: configs/bp_rap_hyper_zerores_staged_ric.yaml
+Flags: --use_physics_synthesis --use_ric --batch_size 32 --epochs 20
+Save dirs: results/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24_final_best_*
+Evaluator note: Zhang real20 was evaluated on CPU because full-resolution
+hypercolumn inference can OOM on GPU.
+```
+
+Training log reading:
+
+```text
+Final epoch total=0.045397 pix=0.026953 grad=0.012405
+anchor=0.006250 delta=0.014587 freq=0.000000 ric=0.023927
+```
+
+RIC was active and stable. `delta` stayed small, so the short fine-tune did not
+show evidence of uncontrolled residual drift.
+
+Metrics:
+
+| Dataset | BP-RAP RIC PSNR | BP-RAP RIC SSIM | BP-RAP RIC NCC | BP-RAP RIC LMSE | RAP-Hyper PSNR | RAP-Hyper SSIM | RAP-Hyper NCC | RAP-Hyper LMSE | Baseline PSNR | Baseline SSIM | Baseline NCC | Baseline LMSE | Reading |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| CEILNet Table2 | 23.9710 | 0.9076 | 0.9533 | 0.0072 | 23.8254 | 0.9070 | 0.9534 | 0.0072 | 27.8765 | 0.9407 | 0.9808 | 0.0048 | Small PSNR/SSIM gain over RAP-Hyper, but still far below baseline. |
+| Zhang real20 | 20.1036 | 0.7433 | 0.8339 | 0.0208 | 20.0619 | 0.7412 | 0.8341 | 0.0209 | 23.5531 | 0.8285 | 0.8877 | 0.0201 | Tiny PSNR/SSIM/LMSE gain over RAP-Hyper; still below baseline. |
+| SIR2 Objects | 25.8905 | 0.9121 | 0.9858 | 0.0026 | 25.8933 | 0.9115 | 0.9858 | 0.0026 | 24.8533 | 0.8980 | 0.9817 | 0.0029 | Essentially preserves RAP-Hyper while slightly improving SSIM/LMSE. |
+| SIR2 Postcard | 22.4479 | 0.8950 | 0.9525 | 0.0036 | 22.5328 | 0.8954 | 0.9517 | 0.0036 | 22.0702 | 0.8773 | 0.9463 | 0.0044 | Slight PSNR/SSIM drop from RAP-Hyper, but NCC/LMSE improve. |
+| SIR2 Wild | 26.1264 | 0.9192 | 0.9576 | 0.0041 | 25.8443 | 0.9185 | 0.9578 | 0.0040 | 25.1778 | 0.8861 | 0.9359 | 0.0083 | Best PSNR/SSIM among RAP variants so far; strong over baseline. |
+
+Aggregate comparison:
+
+| Method | Mean PSNR over 5 sets | SIR2-only mean PSNR | SIR2-only mean SSIM | SIR2-only mean NCC | SIR2-only mean LMSE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline ERRNet `--hyper` | 24.7062 | 24.0338 | 0.8871 | 0.9546 | 0.0052 |
+| RAP-Hyper | 23.6315 | 24.7568 | 0.9085 | 0.9651 | 0.0034 |
+| Hyper-ZeroRes-Staged | 23.2337 | 24.0451 | 0.8989 | 0.9589 | 0.0039 |
+| BP-RAP RIC-only | 23.7079 | 24.8216 | 0.9088 | 0.9653 | 0.0034 |
+
+Interpretation:
+
+- RIC-only is a small but useful improvement over RAP-Hyper on the overall
+  five-set mean and the SIR2-only mean. It particularly helps SIR2 Wild and
+  slightly improves CEILNet/Zhang PSNR.
+- It does not solve the CEILNet and Zhang gap against the pretrained ERRNet
+  baseline. The result should not be claimed as universally better than
+  baseline.
+- Compared with Hyper-ZeroRes-Staged, RIC-only is clearly stronger on SIR2 and
+  overall mean PSNR, but staged still has better CEILNet NCC/LMSE and Zhang
+  LMSE. This supports treating RIC as a performance-oriented short fine-tune
+  rather than a strict do-no-harm solution.
+- Recommended reporting position: use `BP-RAP RIC-only` as the current best
+  RAP-family result for real-scene/SIR2 performance, and keep the original
+  ERRNet baseline as the synthetic CEILNet reference.
 
 ## 8. Next Experiments
 
