@@ -315,9 +315,44 @@ Interpretation:
   baseline. The most likely cause is unrestricted fine-tuning drift: the new
   residual modules and backbone can change low-reflection regions even when the
   pretrained baseline is already correct.
-- This result should be reported as `RAP-Hyper`, but the final main method
-  should be the newer staged zero-residual version with baseline anchoring:
-  `configs/rap_errnet_hyper_zerores_staged.yaml`.
+- This result should be reported as `RAP-Hyper`. It is currently the strongest
+  RAP variant on SIR2, but a staged zero-residual run is needed to test whether
+  CEILNet/Zhang20 degradation can be reduced.
+
+## 7.3 Final Hyper-ZeroRes-Staged Evaluation Result
+
+Snapshot:
+
+```text
+Checkpoint: checkpoints/rap_errnet_hyper_zerores_staged_ppu_bs32/best.pt
+Training stage: epoch 100, staged hypercolumn pretrained RAP
+Config: configs/rap_errnet_hyper_zerores_staged.yaml
+Save dirs: results/rap_errnet_hyper_zerores_staged_ppu_bs32_final_best_*
+Evaluator note: Zhang real20 was evaluated on CPU because full-resolution
+hypercolumn inference OOMs on GPU.
+```
+
+Metrics:
+
+| Dataset | Staged PSNR | Staged SSIM | Staged NCC | Staged LMSE | RAP-Hyper PSNR | RAP-Hyper SSIM | RAP-Hyper NCC | RAP-Hyper LMSE | Baseline PSNR | Baseline SSIM | Baseline NCC | Baseline LMSE | Reading |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| CEILNet Table2 | 23.8376 | 0.9116 | 0.9648 | 0.0070 | 23.8254 | 0.9070 | 0.9534 | 0.0072 | 27.8765 | 0.9407 | 0.9808 | 0.0048 | Slightly more stable than RAP-Hyper, but still far below baseline. |
+| Zhang real20 | 20.1955 | 0.7440 | 0.8275 | 0.0196 | 20.0619 | 0.7412 | 0.8341 | 0.0209 | 23.5531 | 0.8285 | 0.8877 | 0.0201 | Small PSNR/SSIM/LMSE gain over RAP-Hyper; NCC drops. |
+| SIR2 Objects | 25.4906 | 0.9076 | 0.9862 | 0.0025 | 25.8933 | 0.9115 | 0.9858 | 0.0026 | 24.8533 | 0.8980 | 0.9817 | 0.0029 | Still better than baseline, but weaker than RAP-Hyper on PSNR/SSIM. |
+| SIR2 Postcard | 21.6596 | 0.8836 | 0.9482 | 0.0041 | 22.5328 | 0.8954 | 0.9517 | 0.0036 | 22.0702 | 0.8773 | 0.9463 | 0.0044 | Better than baseline on SSIM/NCC/LMSE, but lower PSNR and weaker than RAP-Hyper. |
+| SIR2 Wild | 24.9851 | 0.9055 | 0.9424 | 0.0051 | 25.8443 | 0.9185 | 0.9578 | 0.0040 | 25.1778 | 0.8861 | 0.9359 | 0.0083 | Better structural metrics than baseline, but loses PSNR and is weaker than RAP-Hyper. |
+
+Interpretation:
+
+- Staged zero-residual training does reduce some drift: CEILNet SSIM/NCC/LMSE
+  and Zhang PSNR/SSIM/LMSE improve slightly over RAP-Hyper.
+- The improvement is too small to solve the CEILNet/Zhang20 gap.
+- The stronger anchor and staged schedule also restrict useful corrections,
+  reducing the large SIR2 gains seen in RAP-Hyper.
+- For the final report, use RAP-Hyper as the main performance-oriented RAP
+  result and report Hyper-ZeroRes-Staged as a conservative ablation. The staged
+  run is useful evidence that the project explored baseline-preserving training,
+  but it is not the best final checkpoint.
 
 ## 8. Next Experiments
 
