@@ -835,6 +835,10 @@ Code fix:
   `--splits train`.
 - The arranging code still accepts `train_5000.zip` as a fallback key if a
   manually downloaded archive uses the corrected name.
+- After a network-interrupted download produced a partial 650 MB zip, the
+  script was further updated to validate zip integrity before reuse and to pass
+  `--force` through to Hugging Face's downloader. This prevents a corrupt
+  partial archive from being treated as a completed OpenRR train download.
 
 Server command after pulling this update:
 
@@ -845,7 +849,8 @@ git pull origin dip26
 python scripts/download_openrr.py \
   --data_root ./data \
   --cache_dir /mnt/data/openrr5k_raw \
-  --splits train
+  --splits train \
+  --force
 ```
 
 If symbolic links are unreliable on the mounted storage, use:
