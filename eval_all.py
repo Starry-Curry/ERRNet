@@ -39,6 +39,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="resize evaluation images so their longest edge does not exceed this value",
     )
+    parser.add_argument(
+        "--residual_scale_override",
+        type=float,
+        default=None,
+        help="post-hoc residual trust scale: output = anchor + scale * (output - anchor)",
+    )
+    parser.add_argument(
+        "--postprocess",
+        choices=["none", "prior_residual_gate", "lowfreq_anchor"],
+        default="none",
+        help="optional post-hoc calibration applied before metrics and image saving",
+    )
+    parser.add_argument("--prior_gamma", type=float, default=1.5, help="gamma for prior_residual_gate")
+    parser.add_argument("--gate_min", type=float, default=0.2, help="minimum gate for prior_residual_gate")
+    parser.add_argument("--lf_sigma", type=float, default=9.0, help="Gaussian sigma for lowfreq_anchor")
+    parser.add_argument("--lf_lambda", type=float, default=0.5, help="low-frequency residual weight for lowfreq_anchor")
+    parser.add_argument("--hf_lambda", type=float, default=1.0, help="high-frequency residual weight for lowfreq_anchor")
     return parser.parse_args()
 
 
@@ -310,6 +327,97 @@ def _save_output_image(save_path: Path, output_tensor) -> None:
     Image.fromarray(_tensor_to_rgb(output_tensor)).save(save_path)
 
 
+def _gaussian_kernel1d(sigma: float, dtype, device):
+    import torch
+
+    sigma = max(float(sigma), 1e-3)
+    radius = max(1, int(round(3.0 * sigma)))
+    coords = torch.arange(-radius, radius + 1, dtype=dtype, device=device)
+    kernel = torch.exp(-(coords**2) / (2.0 * sigma * sigma))
+    return kernel / kernel.sum().clamp_min(1e-12)
+
+
+def _gaussian_blur_batch(image, sigma: float):
+    import torch.nn.functional as F
+
+    if sigma <= 0:
+        return image
+    channels = image.shape[1]
+    kernel = _gaussian_kernel1d(sigma, image.dtype, image.device)
+    radius = kernel.numel() // 2
+    kernel_x = kernel.view(1, 1, 1, -1).repeat(channels, 1, 1, 1)
+    kernel_y = kernel.view(1, 1, -1, 1).repeat(channels, 1, 1, 1)
+    x = F.pad(image, (radius, radius, 0, 0), mode="replicate")
+    x = F.conv2d(x, kernel_x, groups=channels)
+    x = F.pad(x, (0, 0, radius, radius), mode="replicate")
+    return F.conv2d(x, kernel_y, groups=channels)
+
+
+def _resize_like(tensor, reference):
+    import torch.nn.functional as F
+
+    if tensor.shape[-2:] == reference.shape[-2:]:
+        return tensor
+    return F.interpolate(tensor, size=reference.shape[-2:], mode="bilinear", align_corners=False)
+
+
+def _get_anchor(outputs: Mapping[str, Any], output):
+    anchor = outputs.get("backbone_output", outputs.get("coarse"))
+    if anchor is None:
+        return None
+    return _resize_like(anchor.to(device=output.device, dtype=output.dtype), output).clamp(0.0, 1.0)
+
+
+def _get_prior(outputs: Mapping[str, Any], output):
+    prior = outputs.get("prior")
+    if prior is None:
+        return None
+    prior = prior.to(device=output.device, dtype=output.dtype).clamp(0.0, 1.0)
+    prior = _resize_like(prior, output)
+    if prior.shape[1] != 1:
+        prior = prior.mean(dim=1, keepdim=True)
+    return prior
+
+
+def apply_postprocess(outputs: Mapping[str, Any], args: argparse.Namespace):
+    """Apply optional post-hoc calibration without changing model weights."""
+
+    output = outputs["output"].clamp(0.0, 1.0)
+    if args.residual_scale_override is None and args.postprocess == "none":
+        return output
+
+    anchor = _get_anchor(outputs, output)
+    if anchor is None:
+        warnings.warn("Postprocess requested but model output has no coarse/backbone anchor; using raw output.", RuntimeWarning)
+        return output
+
+    if args.residual_scale_override is not None:
+        output = anchor + float(args.residual_scale_override) * (output - anchor)
+        output = output.clamp(0.0, 1.0)
+
+    if args.postprocess == "none":
+        return output
+
+    prior = _get_prior(outputs, output)
+    if prior is None:
+        warnings.warn("Postprocess requested but model output has no prior map; using raw/scaled output.", RuntimeWarning)
+        return output
+
+    delta = output - anchor
+    if args.postprocess == "prior_residual_gate":
+        gate = prior.pow(float(args.prior_gamma)).clamp(float(args.gate_min), 1.0)
+        return (anchor + gate * delta).clamp(0.0, 1.0)
+
+    if args.postprocess == "lowfreq_anchor":
+        delta_low = _gaussian_blur_batch(delta, float(args.lf_sigma))
+        delta_high = delta - delta_low
+        prior_smooth = _gaussian_blur_batch(prior, float(args.lf_sigma)).clamp(0.0, 1.0)
+        calibrated = anchor + float(args.lf_lambda) * prior_smooth * delta_low + float(args.hf_lambda) * prior_smooth * delta_high
+        return calibrated.clamp(0.0, 1.0)
+
+    raise ValueError(f"Unknown postprocess mode: {args.postprocess}")
+
+
 def evaluate_dataset(
     model,
     dataset_name: str,
@@ -319,6 +427,7 @@ def evaluate_dataset(
     save_images: bool,
     baseline_model=None,
     max_long_edge: Optional[int] = None,
+    postprocess_args: Optional[argparse.Namespace] = None,
 ) -> List[Dict[str, Any]]:
     import torch
     from torch.utils.data import DataLoader
@@ -340,7 +449,7 @@ def evaluate_dataset(
         name = batch["name"][0] if isinstance(batch["name"], (list, tuple)) else str(batch["name"])
         with torch.no_grad():
             outputs = model(input_tensor)
-        output = outputs["output"].clamp(0.0, 1.0)
+        output = apply_postprocess(outputs, postprocess_args) if postprocess_args is not None else outputs["output"].clamp(0.0, 1.0)
         baseline_output = None
         if baseline_model is not None:
             with torch.no_grad():
@@ -396,6 +505,7 @@ def main() -> None:
             args.save_images,
             baseline_model=baseline_model,
             max_long_edge=args.max_long_edge,
+            postprocess_args=args,
         )
         all_rows.extend(rows)
 
