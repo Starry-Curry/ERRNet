@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", choices=["errnet", "rap_errnet"], default="rap_errnet")
     parser.add_argument("--ckpt", required=True, help="checkpoint path")
     parser.add_argument("--config", default=None, help="RAP-ERRNet YAML config used to build the checkpointed model")
+    parser.add_argument("--errnet_hyper", action="store_true", help="build primary --model errnet with VGG hypercolumn input")
     parser.add_argument("--baseline_ckpt", default=None, help="optional ERRNet checkpoint to include in saved visualizations")
     parser.add_argument("--baseline_hyper", action="store_true", help="build the optional baseline as ERRNet --hyper")
     parser.add_argument("--data_root", default="./data")
@@ -91,6 +92,13 @@ def _build_rap_model_from_config(config_path: Optional[str | Path]):
     )
 
 
+def _config_requests_hypercolumn(config_path: Optional[str | Path]) -> bool:
+    if config_path is None:
+        return False
+    cfg = load_config(config_path)
+    return bool(dict(cfg.get("model", {})).get("use_hypercolumn_backbone", False))
+
+
 def _raise_if_rap_backbone_mismatch(state: Mapping[str, Any], model, ckpt_path: Path, config_path: Optional[str | Path]) -> None:
     first_key = "backbone.conv1.conv2d.weight"
     if first_key not in state or first_key not in model.state_dict():
@@ -115,6 +123,28 @@ def _raise_if_rap_backbone_mismatch(state: Mapping[str, Any], model, ckpt_path: 
         f"RAP-ERRNet checkpoint/model backbone mismatch for {ckpt_path}: "
         f"checkpoint {first_key} has shape {checkpoint_shape}, model expects {model_shape}. "
         f"{hint}{config_hint}"
+    )
+
+
+def _raise_if_errnet_backbone_mismatch(state: Mapping[str, Any], model, ckpt_path: Path, errnet_hyper: bool) -> None:
+    first_key = "conv1.conv2d.weight"
+    if first_key not in state or first_key not in model.net.state_dict():
+        return
+    if not hasattr(state[first_key], "shape"):
+        return
+    checkpoint_shape = tuple(state[first_key].shape)
+    model_shape = tuple(model.net.state_dict()[first_key].shape)
+    if checkpoint_shape == model_shape:
+        return
+    expected = "1475-channel --hyper" if errnet_hyper else "3-channel non-hyper"
+    hint = (
+        "The course checkpoint checkpoints/errnet/errnet_060_00463920.pt is an ERRNet --hyper checkpoint. "
+        "Evaluate it with `--errnet_hyper` or pass a config whose model.use_hypercolumn_backbone is true."
+    )
+    raise ValueError(
+        f"ERRNet checkpoint/model backbone mismatch for {ckpt_path}: "
+        f"checkpoint {first_key} has shape {checkpoint_shape}, but the {expected} eval model expects {model_shape}. "
+        f"{hint}"
     )
 
 
@@ -188,6 +218,7 @@ def load_model(
     else:
         model = ERRNetHyperEvalWrapper() if errnet_hyper else ERRNetEvalWrapper()
         state = checkpoint.get("icnn", checkpoint.get("model", checkpoint.get("state_dict", checkpoint)))
+        _raise_if_errnet_backbone_mismatch(state, model, ckpt_path, errnet_hyper)
         compatible = _filter_compatible(state, model.net)
         skipped = len(state) - len(compatible)
         if skipped:
@@ -336,7 +367,10 @@ def main() -> None:
     device = choose_device(args.device)
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    model = load_model(args.model, Path(args.ckpt), device, config_path=args.config)
+    primary_errnet_hyper = args.errnet_hyper or (args.model == "errnet" and _config_requests_hypercolumn(args.config))
+    if args.model == "errnet" and primary_errnet_hyper:
+        print("[i] evaluating primary ERRNet with --hyper VGG19 hypercolumn input")
+    model = load_model(args.model, Path(args.ckpt), device, config_path=args.config, errnet_hyper=primary_errnet_hyper)
     baseline_model = None
     if args.baseline_ckpt:
         if not args.save_images:

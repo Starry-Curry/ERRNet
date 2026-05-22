@@ -151,6 +151,26 @@ python eval_all.py \
 
 The `--config` argument is required during evaluation for hypercolumn RAP checkpoints, because the model must be reconstructed with the same 1475-channel backbone used during training.
 
+For the course ERRNet baseline checkpoint, use `test_errnet.py --hyper` as the
+official baseline path. If you evaluate the same checkpoint with `eval_all.py`,
+also build ERRNet with hypercolumn input:
+
+```bash
+python eval_all.py \
+  --model errnet \
+  --errnet_hyper \
+  --ckpt checkpoints/errnet/errnet_060_00463920.pt \
+  --data_root ./data \
+  --save_dir results/errnet_eval_all_check \
+  --datasets ceilnet,sir2_objects,sir2_postcard,sir2_wild \
+  --device auto
+```
+
+Passing `--config configs/rap_errnet_hyper_pretrained.yaml` has the same effect
+because that config declares `model.use_hypercolumn_backbone: true`. The script
+now raises an explicit error if a 1475-channel ERRNet `--hyper` checkpoint is
+accidentally evaluated with the default 3-channel ERRNet wrapper.
+
 Recommended final run with conservative staged fine-tuning:
 
 ```bash
