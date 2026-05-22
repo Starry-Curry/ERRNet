@@ -19,7 +19,7 @@ The project has moved from implementation to experiment production.
 | RAP hyper-pretrained path | Ready | Config uses the same ERRNet `--hyper` 1475-channel backbone as the course baseline. |
 | RAP staged zero-res path | Ready | `configs/rap_errnet_hyper_zerores_staged.yaml` freezes the backbone first, then uses differential LR fine-tuning. |
 | BP-RAP v1.3 RIC path | Evaluated | RIC-only short fine-tune from RAP-Hyper is complete and recorded in Section 7.4. |
-| BP-RAP v1.3 RIC+FSS path | Ready | Implemented as an optional ablation, but should only be run after deciding whether RIC-only is worth extending. |
+| BP-RAP v1.3 RIC+FSS path | Evaluated | Short fine-tune from RIC-only is complete and recorded in Section 7.5. |
 | RAP extra-data fine-tune path | Ready | `configs/rap_errnet_hyper_zerores_extra_finetune.yaml` resumes model weights with reset epoch/optimizer for short OpenRR or `extra_train` adaptation. |
 | RAP full evaluation | Pending | Run after mid/final checkpoint is available. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
@@ -417,6 +417,59 @@ Interpretation:
 - Recommended reporting position: use `BP-RAP RIC-only` as the current best
   RAP-family result for real-scene/SIR2 performance, and keep the original
   ERRNet baseline as the synthetic CEILNet reference.
+
+## 7.5 BP-RAP v1.3 RIC+FSS Short Fine-Tune Result
+
+Snapshot:
+
+```text
+Checkpoint: checkpoints/bp_rap_hyper_ric_freq_ft_from_ric_ppu_bs24/best.pt
+Training source: resumed model-only from checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Training stage: 10 epochs, warmup_new_modules only, backbone frozen
+Config: configs/bp_rap_hyper_zerores_staged_ric_freq.yaml
+Flags: --use_physics_synthesis --use_ric --use_freq_loss --batch_size 24 --epochs 10
+Save dirs: results/bp_rap_hyper_ric_freq_ft_from_ric_ppu_bs24_final_best_*
+Evaluator note: Zhang real20 was evaluated on CPU because full-resolution
+hypercolumn inference can OOM on GPU.
+```
+
+Training log reading:
+
+```text
+Final epoch total=0.045842 pix=0.026775 grad=0.012386
+anchor=0.006385 delta=0.014661 freq=0.020965 ric=0.022247
+```
+
+The added frequency loss was active and stable. Training loss changed only
+slightly, which is expected for a short regularization fine-tune from an already
+stable RIC checkpoint.
+
+Metrics:
+
+| Dataset | RIC+FSS PSNR | RIC+FSS SSIM | RIC+FSS NCC | RIC+FSS LMSE | RIC-only PSNR | RIC-only SSIM | RIC-only NCC | RIC-only LMSE | Delta / Reading |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| CEILNet Table2 | 23.9003 | 0.9073 | 0.9532 | 0.0072 | 23.9710 | 0.9076 | 0.9533 | 0.0072 | PSNR/SSIM/NCC slightly drop; LMSE is almost unchanged. |
+| Zhang real20 | 20.0988 | 0.7428 | 0.8340 | 0.0207 | 20.1036 | 0.7433 | 0.8339 | 0.0208 | Essentially tied; tiny LMSE/NCC gain but no meaningful PSNR gain. |
+| SIR2 Objects | 25.9041 | 0.9119 | 0.9858 | 0.0026 | 25.8905 | 0.9121 | 0.9858 | 0.0026 | Tiny PSNR/LMSE gain, SSIM nearly tied. |
+| SIR2 Postcard | 22.4792 | 0.8955 | 0.9527 | 0.0035 | 22.4479 | 0.8950 | 0.9525 | 0.0036 | Small improvement across all metrics. |
+| SIR2 Wild | 26.0929 | 0.9187 | 0.9576 | 0.0041 | 26.1264 | 0.9192 | 0.9576 | 0.0041 | Slightly worse than RIC-only. |
+
+Aggregate comparison:
+
+| Method | Mean PSNR over 5 sets | SIR2-only mean PSNR | SIR2-only mean SSIM | SIR2-only mean NCC | SIR2-only mean LMSE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BP-RAP RIC-only | 23.7079 | 24.8216 | 0.9088 | 0.9653 | 0.0034 |
+| BP-RAP RIC+FSS | 23.6951 | 24.8254 | 0.9087 | 0.9654 | 0.0034 |
+
+Interpretation:
+
+- RIC+FSS does not improve the five-set mean over RIC-only. It slightly helps
+  SIR2 Objects/Postcard, but loses CEILNet and SIR2 Wild.
+- The frequency loss behaves as a mild regularizer rather than a clear
+  performance booster at the current weight (`lambda_freq=0.03`).
+- For the final method, keep `BP-RAP RIC-only` as the preferred v1.3 result.
+  Report `RIC+FSS` as an ablation showing that frequency-selective supervision
+  is stable but not consistently beneficial under the current schedule.
 
 ## 8. Next Experiments
 
