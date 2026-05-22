@@ -33,6 +33,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--datasets", default=DEFAULT_DATASETS, help="comma-separated dataset names")
     parser.add_argument("--save_images", action="store_true")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    parser.add_argument(
+        "--max_long_edge",
+        type=int,
+        default=None,
+        help="resize evaluation images so their longest edge does not exceed this value",
+    )
     return parser.parse_args()
 
 
@@ -312,6 +318,7 @@ def evaluate_dataset(
     device,
     save_images: bool,
     baseline_model=None,
+    max_long_edge: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     import torch
     from torch.utils.data import DataLoader
@@ -320,7 +327,7 @@ def evaluate_dataset(
     from metrics.reflection_metrics import compute_metrics, save_metrics_csv
 
     try:
-        dataset = UnifiedReflectionDataset(data_root, dataset_name, crop_size=None, image_size=None)
+        dataset = UnifiedReflectionDataset(data_root, dataset_name, crop_size=None, image_size=None, max_long_edge=max_long_edge)
     except FileNotFoundError as exc:
         warnings.warn(f"Skipping {dataset_name}: {exc}", RuntimeWarning)
         return []
@@ -388,6 +395,7 @@ def main() -> None:
             device,
             args.save_images,
             baseline_model=baseline_model,
+            max_long_edge=args.max_long_edge,
         )
         all_rows.extend(rows)
 

@@ -112,10 +112,26 @@ def _center_crop(image: Image.Image, crop_size: Optional[int]) -> Image.Image:
     return image.crop((left, top, left + side, top + side))
 
 
-def _load_rgb(path: Path, image_size=None, crop_size: Optional[int] = None) -> Image.Image:
+def _resize_long_edge(image: Image.Image, max_long_edge: Optional[int]) -> Image.Image:
+    if max_long_edge is None:
+        return image
+    max_long_edge = int(max_long_edge)
+    if max_long_edge <= 0:
+        return image
+    w, h = image.size
+    long_edge = max(w, h)
+    if long_edge <= max_long_edge:
+        return image
+    scale = max_long_edge / float(long_edge)
+    new_size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
+    return image.resize(new_size, Image.BICUBIC)
+
+
+def _load_rgb(path: Path, image_size=None, crop_size: Optional[int] = None, max_long_edge: Optional[int] = None) -> Image.Image:
     if not path.exists():
         raise FileNotFoundError(f"Image not found: {path}")
     image = Image.open(path).convert("RGB")
+    image = _resize_long_edge(image, max_long_edge)
     size = _parse_size(image_size)
     if size is not None:
         image = image.resize(size, Image.BICUBIC)
@@ -290,6 +306,7 @@ class UnifiedReflectionDataset(Dataset):
         *,
         crop_size: Optional[int] = None,
         image_size=None,
+        max_long_edge: Optional[int] = None,
         use_physics_synthesis: bool = False,
         max_pairs: Optional[int] = None,
         synthesis_config: Optional[dict] = None,
@@ -298,6 +315,7 @@ class UnifiedReflectionDataset(Dataset):
         self.dataset = dataset
         self.crop_size = crop_size
         self.image_size = image_size
+        self.max_long_edge = max_long_edge
         self.use_physics_synthesis = use_physics_synthesis
         self.synthesis_config = synthesis_config
 
@@ -336,8 +354,8 @@ class UnifiedReflectionDataset(Dataset):
     def _load_voc_sample(self, index: int) -> Dict[str, torch.Tensor | str]:
         t_path = self.voc_images[index % len(self.voc_images)]
         r_path = self.voc_images[(index + max(1, len(self.voc_images) // 2)) % len(self.voc_images)]
-        t_img = _load_rgb(t_path, image_size=self.image_size, crop_size=self.crop_size)
-        r_img = _load_rgb(r_path, image_size=self.image_size, crop_size=self.crop_size)
+        t_img = _load_rgb(t_path, image_size=self.image_size, crop_size=self.crop_size, max_long_edge=self.max_long_edge)
+        r_img = _load_rgb(r_path, image_size=self.image_size, crop_size=self.crop_size, max_long_edge=self.max_long_edge)
         if self.use_physics_synthesis:
             sample = synthesize_reflection_pair(t_img, r_img, seed=index, config=self.synthesis_config)
         else:
@@ -355,12 +373,13 @@ class UnifiedReflectionDataset(Dataset):
 
     def _load_pair_sample(self, index: int) -> Dict[str, torch.Tensor | str]:
         input_path, target_path, mask_path = self.pairs[index]
-        input_img = _load_rgb(input_path, image_size=self.image_size, crop_size=self.crop_size)
-        target_img = _load_rgb(target_path, image_size=self.image_size, crop_size=self.crop_size)
+        input_img = _load_rgb(input_path, image_size=self.image_size, crop_size=self.crop_size, max_long_edge=self.max_long_edge)
+        target_img = _load_rgb(target_path, image_size=self.image_size, crop_size=self.crop_size, max_long_edge=self.max_long_edge)
         input_tensor = _to_tensor(input_img)
         target_tensor = _to_tensor(target_img)
         if mask_path is not None and mask_path.exists():
             mask_img = Image.open(mask_path)
+            mask_img = _resize_long_edge(mask_img, self.max_long_edge)
             size = _parse_size(self.image_size)
             if size is not None:
                 mask_img = mask_img.resize(size, Image.BICUBIC)

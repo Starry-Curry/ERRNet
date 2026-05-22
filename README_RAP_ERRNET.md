@@ -171,6 +171,21 @@ because that config declares `model.use_hypercolumn_backbone: true`. The script
 now raises an explicit error if a 1475-channel ERRNet `--hyper` checkpoint is
 accidentally evaluated with the default 3-channel ERRNet wrapper.
 
+To match the course `test_errnet.py` real20/Zhang setting, evaluate `zhang20`
+with longest-edge resize:
+
+```bash
+python eval_all.py \
+  --model errnet \
+  --errnet_hyper \
+  --ckpt checkpoints/errnet/errnet_060_00463920.pt \
+  --data_root ./data \
+  --save_dir results/errnet_eval_all_zhang20_512 \
+  --datasets zhang20 \
+  --max_long_edge 512 \
+  --device auto
+```
+
 Recommended final run with conservative staged fine-tuning:
 
 ```bash
