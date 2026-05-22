@@ -62,7 +62,7 @@ def _selected_splits(value: str) -> list[str]:
     return parts or ["val"]
 
 
-def _download_with_hf_hub(repo: str, filename: str, out_path: Path, token: Optional[str]) -> bool:
+def _download_with_hf_hub(repo: str, filename: str, out_path: Path, token: Optional[str], force: bool) -> bool:
     try:
         from huggingface_hub import hf_hub_download
     except Exception:
@@ -74,12 +74,21 @@ def _download_with_hf_hub(repo: str, filename: str, out_path: Path, token: Optio
         token=token,
         local_dir=str(out_path.parent),
         local_dir_use_symlinks=False,
+        force_download=force,
     )
     downloaded_path = Path(downloaded)
     if downloaded_path.resolve() != out_path.resolve():
         out_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(downloaded_path, out_path)
     return True
+
+
+def _looks_like_complete_zip(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    if path.suffix.lower() != ".zip":
+        return True
+    return zipfile.is_zipfile(path)
 
 
 def _download_with_urllib(repo: str, filename: str, out_path: Path, token: Optional[str]) -> None:
@@ -94,12 +103,20 @@ def _download_with_urllib(repo: str, filename: str, out_path: Path, token: Optio
 
 def download_file(repo: str, filename: str, cache_dir: Path, token: Optional[str], force: bool) -> Path:
     out_path = cache_dir / filename
-    if out_path.exists() and out_path.stat().st_size > 0 and not force:
+    if out_path.exists() and not force and _looks_like_complete_zip(out_path):
         print(f"[i] exists: {out_path}")
         return out_path
+    if out_path.exists() and not force:
+        print(f"[w] removing incomplete or invalid file before retry: {out_path}")
+        out_path.unlink()
     print(f"[i] downloading {repo}/{filename}")
-    if not _download_with_hf_hub(repo, filename, out_path, token):
+    if not _download_with_hf_hub(repo, filename, out_path, token, force):
         _download_with_urllib(repo, filename, out_path, token)
+    if not _looks_like_complete_zip(out_path):
+        raise RuntimeError(
+            f"Downloaded file is incomplete or not a valid zip: {out_path}. "
+            "Delete it or rerun with --force after the network is stable."
+        )
     print(f"[i] saved: {out_path} ({out_path.stat().st_size / (1024 ** 3):.2f} GiB)")
     return out_path
 
