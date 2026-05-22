@@ -22,6 +22,9 @@ The project has moved from implementation to experiment production.
 | BP-RAP v1.3 RIC+FSS path | Evaluated | Short fine-tune from RIC-only is complete and recorded in Section 7.5. |
 | RAP extra-data fine-tune path | Ready | `configs/rap_errnet_hyper_zerores_extra_finetune.yaml` resumes model weights with reset epoch/optimizer for short OpenRR or `extra_train` adaptation. |
 | Unified final evaluation | Done | Baseline and RAP variants were re-evaluated with `eval_all.py`; Zhang20 uses `--max_long_edge 512` to match the course real20 setting. |
+| OpenRR zero-shot external evaluation | Done | BP-RAP RIC improves OpenRR val over ERRNet by +1.37 dB PSNR and lower LMSE; see Section 12.1. |
+| OpenRR train download | Ready | `scripts/download_openrr.py` now uses the upstream archive name `trian_5k.zip` for the train split. |
+| Post-hoc calibration sweep | Pending | Residual scale, prior-gated residual, and low-frequency anchoring sweeps are planned before extra-data training. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
 
@@ -38,6 +41,7 @@ The project has moved from implementation to experiment production.
 | current update | Added staged zero-residual RAP config, differential LR parameter groups, optional extra training data, anchor/delta losses, and pseudo-mask downweighting. |
 | `5adc327` | Added BP-RAP v1.3 optional RIC and frequency-selective losses, configs, and design plan. |
 | `096b7d7` | Fixed `scripts/sanity_zerores.py` import path for direct script execution. |
+| current update | Recorded OpenRR zero-shot results and fixed the OpenRR train archive name in `scripts/download_openrr.py`. |
 
 ## 3. Environment And Data
 
@@ -758,6 +762,159 @@ Interpretation:
   not the best main result candidate.
 - The main report should therefore emphasize the hypercolumn pretrained RAP run
   as the primary method and keep this run as a from-scratch reference.
+
+## 12.1 OpenRR External Validation And Next Stage Plan
+
+### 12.1.1 OpenRR Val Zero-Shot Result
+
+Purpose:
+
+- Check whether the SIR2 real-scene advantage generalizes to an external real
+  reflection benchmark that was not used in the course baseline comparison.
+- Keep this as an external generalization result, separate from the
+  course-required benchmark table.
+
+Protocol:
+
+```text
+Dataset: OpenRR val
+Training data: no OpenRR training data used
+Evaluator: eval_all.py
+Baseline checkpoint: checkpoints/errnet/errnet_060_00463920.pt
+BP-RAP checkpoint: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Save dirs:
+  results/openrr_zero_errnet
+  results/openrr_zero_bp_rap_ric
+```
+
+Metrics:
+
+| Method | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| ERRNet baseline | 25.4874 | 0.9480 | 0.9641 | 0.0030 |
+| BP-RAP RIC | 26.8597 | 0.9600 | 0.9693 | 0.0018 |
+
+Delta:
+
+| Metric | BP-RAP RIC vs ERRNet |
+| --- | ---: |
+| PSNR | +1.3723 dB |
+| SSIM | +0.0121 |
+| NCC | +0.0052 |
+| LMSE | -0.0013 |
+
+Interpretation:
+
+- This is a strong external-validation result. BP-RAP RIC improves OpenRR val
+  before any OpenRR training, which supports the claim that the method improves
+  real-scene generalization rather than only fitting SIR2.
+- The OpenRR result should be highlighted in a separate external benchmark
+  table. It should not be mixed into the course-required mean unless the report
+  clearly labels it as external generalization.
+- Because the zero-shot result is already strong, the next step should be a
+  low-cost post-hoc calibration sweep before downloading and training on
+  OpenRR train. This keeps the method/data effects separated.
+
+### 12.1.2 OpenRR Train Download Fix
+
+Observed error:
+
+```text
+Entry Not Found for url:
+https://hf-mirror.com/datasets/qiuzhangTiTi/OpenRR-5k/resolve/main/train_5000.zip
+```
+
+Cause:
+
+- The upstream Hugging Face dataset uses the archive name `trian_5k.zip` for
+  the training split, not `train_5000.zip`.
+
+Code fix:
+
+- `scripts/download_openrr.py` now downloads `trian_5k.zip` for
+  `--splits train`.
+- The arranging code still accepts `train_5000.zip` as a fallback key if a
+  manually downloaded archive uses the corrected name.
+
+Server command after pulling this update:
+
+```bash
+cd /mnt/workspace/ERRNet
+git pull origin dip26
+
+python scripts/download_openrr.py \
+  --data_root ./data \
+  --cache_dir /mnt/data/openrr5k_raw \
+  --splits train
+```
+
+If symbolic links are unreliable on the mounted storage, use:
+
+```bash
+python scripts/download_openrr.py \
+  --data_root ./data \
+  --cache_dir /mnt/data/openrr5k_raw \
+  --splits train \
+  --copy
+```
+
+Availability check:
+
+```bash
+python - <<'PY'
+from datasets.unified_reflection_dataset import list_available_datasets
+print(list_available_datasets("./data"))
+PY
+find -L data/openrr5k/train/blended -type f | wc -l
+find -L data/openrr5k/train/transmission -type f | wc -l
+```
+
+Expected after a successful train download:
+
+```text
+openrr_train=True
+```
+
+### 12.1.3 Ordered Next Experiments
+
+Do not immediately replace the main course-data result with an OpenRR-trained
+result. Keep the next stage separated:
+
+1. **Post-hoc calibration sweep on BP-RAP RIC.**
+   - Residual scale: `0.25, 0.5, 0.75, 1.0`.
+   - Prior-gated residual: `gamma=1.0,1.5,2.0`, `gate_min=0.2`.
+   - Low-frequency anchoring: `lf_lambda=0.25,0.5,0.75`, `hf_lambda=1.0`.
+   - Evaluate on course datasets plus OpenRR val.
+   - Goal: recover some CEILNet/Zhang performance while keeping SIR2/OpenRR
+     gains.
+
+2. **OpenRR 1k extra-data fine-tune.**
+   - Start from `checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt`.
+   - Use `--use_openrr --max_openrr_pairs 1000`.
+   - Freeze backbone first; train new/prior/refinement modules only.
+   - Report as `BP-RAP RIC + OpenRR-FT`, not as the fair course-only main
+     result.
+
+3. **Checkpoint soup.**
+   - Average BP-RAP RIC and BP-RAP RIC + OpenRR-FT with
+     `alpha=0.25,0.5,0.75`.
+   - Evaluate whether soup balances course-test stability and external real
+     generalization.
+
+4. **Self-collected paired data.**
+   - Add at least five paired scenes under `data/self_collected/test`.
+   - Evaluate ERRNet baseline, BP-RAP RIC, the best calibrated variant, and any
+     OpenRR-FT/soup candidate.
+
+Each finished experiment should append a short subsection here with:
+
+```text
+Checkpoint:
+Command:
+Datasets:
+Metrics:
+Decision:
+```
 
 ## 13. Hyper-Pretrained RAP Mid Evaluation
 

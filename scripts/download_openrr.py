@@ -28,7 +28,9 @@ from typing import Iterable, Optional
 REPO_ID = "qiuzhangTiTi/OpenRR-5k"
 HF_BASE_URL = "https://huggingface.co/datasets/{repo}/resolve/main/{filename}"
 FILES = {
-    "train": ["train_5000.zip"],
+    # The upstream Hugging Face repo currently uses the misspelled archive name
+    # ``trian_5k.zip`` for the 5k training split.
+    "train": ["trian_5k.zip"],
     "val": ["val_300_blended.zip", "val_300_transmission.zip"],
     "test": ["test_100_blended.zip"],
 }
@@ -187,12 +189,14 @@ def arrange_split(split: str, extracted: dict[str, Path], data_root: Path, copy:
         _arrange_images(extracted["test_100_blended.zip"], openrr_root / "test" / "blended", copy)
         return
     if split == "train":
-        train_root = extracted["train_5000.zip"]
+        train_root = extracted.get("trian_5k.zip") or extracted.get("train_5000.zip")
+        if train_root is None:
+            raise FileNotFoundError("OpenRR train archive was not extracted.")
         blended_dir = _find_best_dir(train_root, BLENDED_HINTS)
         target_dir = _find_best_dir(train_root, TARGET_HINTS)
         if blended_dir is None or target_dir is None:
             raise FileNotFoundError(
-                "Could not auto-detect train blended/transmission directories inside train_5000.zip. "
+                "Could not auto-detect train blended/transmission directories inside the OpenRR train archive. "
                 f"Inspect extracted files under {train_root} and arrange them manually."
             )
         print(f"[i] train blended source: {blended_dir}")
