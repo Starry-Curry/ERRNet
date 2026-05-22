@@ -1,6 +1,6 @@
 # RAP-ERRNet Experiment Log
 
-Last updated: 2026-05-21
+Last updated: 2026-05-22
 
 This document records the implementation and experiment progress for the course
 project method **RAP-ERRNet: Reflection-Aware Physics-guided ERRNet**.
@@ -21,7 +21,7 @@ The project has moved from implementation to experiment production.
 | BP-RAP v1.3 RIC path | Evaluated | RIC-only short fine-tune from RAP-Hyper is complete and recorded in Section 7.4. |
 | BP-RAP v1.3 RIC+FSS path | Evaluated | Short fine-tune from RIC-only is complete and recorded in Section 7.5. |
 | RAP extra-data fine-tune path | Ready | `configs/rap_errnet_hyper_zerores_extra_finetune.yaml` resumes model weights with reset epoch/optimizer for short OpenRR or `extra_train` adaptation. |
-| RAP full evaluation | Pending | Run after mid/final checkpoint is available. |
+| Unified final evaluation | Done | Baseline and RAP variants were re-evaluated with `eval_all.py`; Zhang20 uses `--max_long_edge 512` to match the course real20 setting. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
 
@@ -470,6 +470,90 @@ Interpretation:
 - For the final method, keep `BP-RAP RIC-only` as the preferred v1.3 result.
   Report `RIC+FSS` as an ablation showing that frequency-selective supervision
   is stable but not consistently beneficial under the current schedule.
+
+## 7.6 Unified Final Evaluation With Matched eval_all Protocol
+
+Motivation:
+
+- Earlier baseline numbers were produced by `test_errnet.py --hyper`, while RAP
+  variants were mostly evaluated by `eval_all.py`.
+- To avoid mixing metric/data-loader implementations in the final paper table,
+  all methods were re-evaluated with the repaired `eval_all.py`.
+- The primary ERRNet baseline is explicitly evaluated with `--errnet_hyper`,
+  so it uses the same 1475-channel RGB+VGG hypercolumn input as the course
+  checkpoint.
+
+Protocol:
+
+```text
+Evaluator: eval_all.py
+Metrics: metrics/reflection_metrics.py, data_range=1.0
+CEILNet/SIR2 resize: none
+Zhang20/real20 resize: --max_long_edge 512
+Device: --device auto
+Baseline model: --model errnet --errnet_hyper
+RAP models: --model rap_errnet with matching config
+```
+
+This is the recommended protocol for the final report's main comparison table.
+The original `test_errnet.py --hyper` baseline remains a course-baseline
+reproduction check, not the mixed-protocol main table.
+
+Metrics:
+
+| Method | Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | --- | ---: | ---: | ---: | ---: |
+| ERRNet baseline | CEILNet Table2 | 27.6414 | 0.9407 | 0.9808 | 0.0047 |
+| ERRNet baseline | Zhang real20, 512 | 23.4367 | 0.8285 | 0.8877 | 0.0203 |
+| ERRNet baseline | SIR2 Objects | 24.6983 | 0.8980 | 0.9817 | 0.0029 |
+| ERRNet baseline | SIR2 Postcard | 21.8856 | 0.8773 | 0.9463 | 0.0044 |
+| ERRNet baseline | SIR2 Wild | 24.8763 | 0.8861 | 0.9359 | 0.0083 |
+| RAP-Hyper | CEILNet Table2 | 23.9566 | 0.9076 | 0.9536 | 0.0071 |
+| RAP-Hyper | Zhang real20, 512 | 21.0440 | 0.7840 | 0.8604 | 0.0258 |
+| RAP-Hyper | SIR2 Objects | 25.8587 | 0.9118 | 0.9857 | 0.0026 |
+| RAP-Hyper | SIR2 Postcard | 22.4229 | 0.8950 | 0.9514 | 0.0036 |
+| RAP-Hyper | SIR2 Wild | 25.9825 | 0.9192 | 0.9579 | 0.0040 |
+| RAP-Staged | CEILNet Table2 | 23.8376 | 0.9116 | 0.9648 | 0.0070 |
+| RAP-Staged | Zhang real20, 512 | 21.9808 | 0.7971 | 0.8743 | 0.0229 |
+| RAP-Staged | SIR2 Objects | 25.4906 | 0.9076 | 0.9862 | 0.0025 |
+| RAP-Staged | SIR2 Postcard | 21.6596 | 0.8836 | 0.9482 | 0.0041 |
+| RAP-Staged | SIR2 Wild | 24.9851 | 0.9055 | 0.9424 | 0.0051 |
+| BP-RAP RIC | CEILNet Table2 | 23.9710 | 0.9076 | 0.9533 | 0.0072 |
+| BP-RAP RIC | Zhang real20, 512 | 21.0237 | 0.7854 | 0.8603 | 0.0256 |
+| BP-RAP RIC | SIR2 Objects | 25.8905 | 0.9121 | 0.9858 | 0.0026 |
+| BP-RAP RIC | SIR2 Postcard | 22.4479 | 0.8950 | 0.9525 | 0.0036 |
+| BP-RAP RIC | SIR2 Wild | 26.1264 | 0.9192 | 0.9576 | 0.0041 |
+| BP-RAP RIC+FSS | CEILNet Table2 | 23.9003 | 0.9073 | 0.9532 | 0.0072 |
+| BP-RAP RIC+FSS | Zhang real20, 512 | 21.0333 | 0.7857 | 0.8606 | 0.0255 |
+| BP-RAP RIC+FSS | SIR2 Objects | 25.9041 | 0.9119 | 0.9858 | 0.0026 |
+| BP-RAP RIC+FSS | SIR2 Postcard | 22.4792 | 0.8955 | 0.9527 | 0.0035 |
+| BP-RAP RIC+FSS | SIR2 Wild | 26.0929 | 0.9187 | 0.9576 | 0.0041 |
+
+Aggregate:
+
+| Method | 5-set mean PSNR | 5-set mean SSIM | 5-set mean NCC | 5-set mean LMSE | SIR2 mean PSNR | SIR2 mean SSIM | SIR2 mean NCC | SIR2 mean LMSE |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ERRNet baseline | 24.5077 | 0.8861 | 0.9465 | 0.0081 | 23.8201 | 0.8871 | 0.9546 | 0.0052 |
+| RAP-Hyper | 23.8530 | 0.8835 | 0.9418 | 0.0086 | 24.7547 | 0.9087 | 0.9650 | 0.0034 |
+| RAP-Staged | 23.5908 | 0.8811 | 0.9432 | 0.0083 | 24.0451 | 0.8989 | 0.9589 | 0.0039 |
+| BP-RAP RIC | 23.8919 | 0.8839 | 0.9419 | 0.0086 | 24.8216 | 0.9088 | 0.9653 | 0.0034 |
+| BP-RAP RIC+FSS | 23.8820 | 0.8838 | 0.9420 | 0.0086 | 24.8254 | 0.9087 | 0.9654 | 0.0034 |
+
+Interpretation:
+
+- The unified evaluation confirms the central trade-off. ERRNet remains much
+  stronger on CEILNet and Zhang real20, so the final paper should not claim
+  overall dominance over the course baseline.
+- RAP/BP-RAP variants consistently improve all SIR2 subsets over the ERRNet
+  baseline. For BP-RAP RIC, the SIR2 PSNR gains are +1.1922 dB on Objects,
+  +0.5623 dB on Postcard, and +1.2501 dB on Wild.
+- `BP-RAP RIC` is the preferred main method: it has the best 5-set mean PSNR
+  among RAP-family models and nearly the best SIR2 aggregate metrics.
+- `RIC+FSS` very slightly improves SIR2 mean PSNR/NCC and Postcard, but lowers
+  CEILNet and Wild relative to RIC-only. Keep it as an ablation rather than the
+  main method.
+- `RAP-Staged` is useful as a conservative baseline-preserving ablation. It
+  improves Zhang relative to RAP-Hyper/RIC, but sacrifices the SIR2 gains.
 
 ## 8. Next Experiments
 
