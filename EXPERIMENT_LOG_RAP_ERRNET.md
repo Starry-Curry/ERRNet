@@ -921,6 +921,58 @@ Metrics:
 Decision:
 ```
 
+### 12.1.4 Post-Hoc Calibration Sweep Result
+
+Source summary:
+
+```text
+results/NEXT_STAGE_SWEEP_SUMMARY.md
+Checkpoint: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Config: configs/bp_rap_hyper_zerores_staged_ric.yaml
+Sweep datasets: ceilnet, zhang20, sir2_objects, sir2_postcard, sir2_wild, openrr_val
+Sweep resize: --max_long_edge 512 for all datasets
+```
+
+Best sweep candidates by six-dataset mean:
+
+| Method | Count | PSNR | SSIM | NCC | LMSE | Reading |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| residual_1.0 | 6 | 24.1389 | 0.8944 | 0.9447 | 0.0080 | Best mean; effectively no residual attenuation. |
+| residual_0.75 | 6 | 24.0310 | 0.8903 | 0.9441 | 0.0083 | Weaker than full residual. |
+| gate_1.0 | 6 | 23.9072 | 0.8834 | 0.9433 | 0.0087 | Prior gating reduces useful corrections. |
+| lowfreq_0.75 | 6 | 23.8579 | 0.8830 | 0.9431 | 0.0087 | Low-frequency anchoring is too conservative here. |
+
+OpenRR val within the residual scale sweep:
+
+| Method | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| residual_0.25 | 26.7148 | 0.9496 | 0.9714 | 0.0022 |
+| residual_0.5 | 26.9548 | 0.9556 | 0.9721 | 0.0020 |
+| residual_0.75 | 27.1468 | 0.9594 | 0.9725 | 0.0019 |
+| residual_1.0 | 27.2788 | 0.9610 | 0.9727 | 0.0018 |
+
+Interpretation:
+
+- The sweep does not find a better post-hoc calibration than the original
+  BP-RAP RIC output. Reducing residual strength, prior-gating residuals, or
+  low-frequency anchoring all hurt the aggregate trend under the fast 512
+  diagnostic protocol.
+- This means the learned residual correction is not obviously over-aggressive
+  on the current validation mix; attenuating it removes useful reflection
+  removal corrections.
+- For final reporting, keep the uncalibrated `BP-RAP RIC` checkpoint as the
+  course-data main method. Do not add a post-hoc calibration component to the
+  main method.
+- The next useful experiment is therefore extra real-data adaptation with
+  OpenRR train, reported separately as `BP-RAP RIC + OpenRR-FT`.
+
+Decision:
+
+```text
+Selected post-hoc calibration: none
+Next stage: OpenRR 1k frozen-backbone fine-tune from BP-RAP RIC
+```
+
 ## 13. Hyper-Pretrained RAP Mid Evaluation
 
 Snapshot:
