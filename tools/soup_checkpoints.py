@@ -75,6 +75,8 @@ def average_states(state_a: Mapping[str, Any], state_b: Mapping[str, Any], alpha
 
 
 def main() -> None:
+    import torch
+
     args = parse_args()
     if not 0.0 <= args.alpha <= 1.0:
         raise ValueError(f"--alpha must be in [0, 1], got {args.alpha}.")
