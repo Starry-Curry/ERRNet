@@ -1,6 +1,6 @@
 # RAP-ERRNet Experiment Log
 
-Last updated: 2026-05-22
+Last updated: 2026-05-23
 
 This document records the implementation and experiment progress for the course
 project method **RAP-ERRNet: Reflection-Aware Physics-guided ERRNet**.
@@ -20,11 +20,12 @@ The project has moved from implementation to experiment production.
 | RAP staged zero-res path | Ready | `configs/rap_errnet_hyper_zerores_staged.yaml` freezes the backbone first, then uses differential LR fine-tuning. |
 | BP-RAP v1.3 RIC path | Evaluated | RIC-only short fine-tune from RAP-Hyper is complete and recorded in Section 7.4. |
 | BP-RAP v1.3 RIC+FSS path | Evaluated | Short fine-tune from RIC-only is complete and recorded in Section 7.5. |
-| RAP extra-data fine-tune path | Ready | `configs/rap_errnet_hyper_zerores_extra_finetune.yaml` resumes model weights with reset epoch/optimizer for short OpenRR or `extra_train` adaptation. |
+| RAP extra-data fine-tune path | Diagnostic done | OpenRR 1k frozen-backbone real-only fine-tune completed; see Section 12.1.5. |
 | Unified final evaluation | Done | Baseline and RAP variants were re-evaluated with `eval_all.py`; Zhang20 uses `--max_long_edge 512` to match the course real20 setting. |
 | OpenRR zero-shot external evaluation | Done | BP-RAP RIC improves OpenRR val over ERRNet by +1.37 dB PSNR and lower LMSE; see Section 12.1. |
 | OpenRR train download | Ready | `scripts/download_openrr.py` now uses the upstream archive name `trian_5k.zip` for the train split. |
-| Post-hoc calibration sweep | Pending | Residual scale, prior-gated residual, and low-frequency anchoring sweeps are planned before extra-data training. |
+| Post-hoc calibration sweep | Done | Calibration did not improve over raw BP-RAP RIC; see Section 12.1.4. |
+| Checkpoint soup | Pending | Next step after OpenRR-FT: average BP-RAP RIC and OpenRR-FT checkpoints with alpha 0.25/0.50/0.75. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
 
@@ -971,6 +972,94 @@ Decision:
 ```text
 Selected post-hoc calibration: none
 Next stage: OpenRR 1k frozen-backbone fine-tune from BP-RAP RIC
+```
+
+### 12.1.5 OpenRR 1k Frozen-Backbone Fine-Tune Diagnostic
+
+Purpose:
+
+- Test whether a short extra real-data adaptation can improve OpenRR validation
+  after the strong zero-shot BP-RAP RIC result.
+- Keep this result separate from the fair course-data main comparison because it
+  uses OpenRR train pairs.
+
+Snapshot:
+
+```text
+Checkpoint: checkpoints/bp_rap_ric_openrr1k_realonly_freeze_e10/best.pt
+Training source: resumed model-only from checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Training stage: 10 epochs, warmup_new_modules only, backbone frozen
+Config: configs/bp_rap_hyper_zerores_staged_ric.yaml
+Training data: Zhang real89 + OpenRR train 1k
+Flags: --use_openrr --max_openrr_pairs 1000 --batch_size 24 --epochs 10 --lr 2.0e-5 --new_lr 2.0e-5 --backbone_lr 0
+Important note: --use_physics_synthesis was not enabled, so RIC was skipped; this is a real-only OpenRR fine-tune from a BP-RAP RIC checkpoint.
+```
+
+Training log reading:
+
+```text
+training samples=1089 batches_per_epoch=46 batch_size=24
+OpenRR train pairs: 1000
+Zhang train pairs: 89
+epoch 6 total=0.086043 pix=0.058921 grad=0.021313
+anchor=0.011809 delta=0.021864 freq=0.000000 ric=0.000000
+```
+
+Fast diagnostic protocol:
+
+```text
+Evaluator: eval_all.py
+Save dir: results/bp_rap_ric_openrr1k_realonly_freeze_e10_best_512
+Datasets: ceilnet, zhang20, sir2_objects, sir2_postcard, sir2_wild, openrr_val
+Resize: --max_long_edge 512 for all datasets
+```
+
+This is a diagnostic protocol only. For final reporting, use native resolution
+for CEILNet/SIR2/OpenRR and use `--max_long_edge 512` only for Zhang real20 to
+match the course real20 setting.
+
+Metrics:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2, 512 diagnostic | 23.3883 | 0.8881 | 0.9510 | 0.0073 |
+| Zhang real20, 512 | 21.0050 | 0.7745 | 0.8587 | 0.0263 |
+| SIR2 Objects, 512 diagnostic | 25.2267 | 0.9043 | 0.9835 | 0.0040 |
+| SIR2 Postcard, 512 diagnostic | 22.6432 | 0.8777 | 0.9456 | 0.0046 |
+| SIR2 Wild, 512 diagnostic | 25.1550 | 0.9097 | 0.9525 | 0.0052 |
+| OpenRR val, 512 diagnostic | 29.4965 | 0.9646 | 0.9749 | 0.0016 |
+| Six-set mean | 24.4858 | 0.8865 | 0.9444 | 0.0082 |
+
+Comparison against the previous BP-RAP RIC 512 diagnostic reference
+(`residual_1.0` in `results/NEXT_STAGE_SWEEP_SUMMARY.md`):
+
+| Dataset | PSNR Delta | Reading |
+| --- | ---: | --- |
+| CEILNet Table2 | -0.5827 | Extra real-data adaptation hurts synthetic benchmark fidelity. |
+| Zhang real20 | -0.0187 | Essentially tied. |
+| SIR2 Objects | +0.1713 | Small gain. |
+| SIR2 Postcard | +0.6564 | Clear gain. |
+| SIR2 Wild | -0.3626 | Real subset drift; needs balancing. |
+| OpenRR val | +2.2177 | Strong target-domain gain. |
+| Six-set mean | +0.3469 | Mean rises mainly because OpenRR improves strongly. |
+
+Interpretation:
+
+- The OpenRR fine-tune is effective for OpenRR val and helps SIR2 Postcard, but
+  it introduces distribution drift on CEILNet and SIR2 Wild.
+- Because `--use_physics_synthesis` was off, the `--use_ric` flag did not add an
+  active RIC loss in this run. The correct method label is `BP-RAP RIC +
+  OpenRR-FT`, meaning a BP-RAP RIC checkpoint followed by real-only OpenRR
+  fine-tuning.
+- This checkpoint should not replace the course-data main BP-RAP RIC result.
+  It should be reported as an extra-data adaptation result.
+
+Decision:
+
+```text
+Keep checkpoint: yes, as BP-RAP RIC + OpenRR-FT.
+Do not continue OpenRR-only fine-tuning for more epochs.
+Next stage: checkpoint soup with BP-RAP RIC and OpenRR-FT at alpha=0.25,0.50,0.75.
 ```
 
 ## 13. Hyper-Pretrained RAP Mid Evaluation
