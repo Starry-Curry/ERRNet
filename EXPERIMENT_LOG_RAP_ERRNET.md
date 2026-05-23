@@ -25,7 +25,7 @@ The project has moved from implementation to experiment production.
 | OpenRR zero-shot external evaluation | Done | BP-RAP RIC improves OpenRR val over ERRNet by +1.37 dB PSNR and lower LMSE; see Section 12.1. |
 | OpenRR train download | Ready | `scripts/download_openrr.py` now uses the upstream archive name `trian_5k.zip` for the train split. |
 | Post-hoc calibration sweep | Done | Calibration did not improve over raw BP-RAP RIC; see Section 12.1.4. |
-| Checkpoint soup | Pending | Next step after OpenRR-FT: average BP-RAP RIC and OpenRR-FT checkpoints with alpha 0.25/0.50/0.75. |
+| Checkpoint soup | Done | OpenRR-Soup alpha=0.25 is selected as the balanced extra-data candidate; see Section 12.1.6. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
 
@@ -1060,6 +1060,86 @@ Decision:
 Keep checkpoint: yes, as BP-RAP RIC + OpenRR-FT.
 Do not continue OpenRR-only fine-tuning for more epochs.
 Next stage: checkpoint soup with BP-RAP RIC and OpenRR-FT at alpha=0.25,0.50,0.75.
+```
+
+### 12.1.6 OpenRR-Soup Alpha 0.25 Formal Evaluation
+
+Purpose:
+
+- Balance the OpenRR target-domain gain from the OpenRR-FT checkpoint with the
+  course-data stability of the original BP-RAP RIC checkpoint.
+- Select a final extra-data candidate that can be reported separately from the
+  fair course-data main result.
+
+Checkpoint soup:
+
+```text
+Selected checkpoint: checkpoints/bp_rap_ric_openrr1k_soup_a0p25/best.pt
+Soup formula: theta = 0.75 * BP-RAP_RIC + 0.25 * OpenRR_FT
+Base checkpoint: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+OpenRR-FT checkpoint: checkpoints/bp_rap_ric_openrr1k_realonly_freeze_e10/best.pt
+```
+
+Fast 512 sweep result:
+
+| Method | PSNR | SSIM | NCC | LMSE | Reading |
+| --- | ---: | ---: | ---: | ---: | --- |
+| OpenRR-FT | 24.4858 | 0.8865 | 0.9444 | 0.0082 | Highest OpenRR gain, but CEILNet/SIR2 Wild drift. |
+| Soup alpha=0.25 | 24.3010 | 0.8950 | 0.9449 | 0.0079 | Best stability trade-off; restores CEILNet and SIR2 Wild. |
+| Soup alpha=0.50 | 24.4533 | 0.8946 | 0.9450 | 0.0079 | Higher mean, but more OpenRR-biased than alpha=0.25. |
+| Soup alpha=0.75 | 24.5303 | 0.8919 | 0.9449 | 0.0080 | Still close to OpenRR-FT behavior. |
+
+Formal evaluation protocol:
+
+```text
+Evaluator: eval_all.py
+CEILNet/SIR2/OpenRR resize: none
+Zhang20/real20 resize: --max_long_edge 512
+Save dirs:
+  results/bp_rap_ric_openrr1k_soup_a0p25_standard
+  results/bp_rap_ric_openrr1k_soup_a0p25_zhang20_512
+```
+
+Formal metrics:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2 | 23.9450 | 0.9064 | 0.9531 | 0.0071 |
+| Zhang real20, 512 | 21.0559 | 0.7857 | 0.8601 | 0.0256 |
+| SIR2 Objects | 26.0059 | 0.9129 | 0.9861 | 0.0026 |
+| SIR2 Postcard | 22.6883 | 0.8961 | 0.9531 | 0.0036 |
+| SIR2 Wild | 26.0795 | 0.9199 | 0.9578 | 0.0040 |
+| OpenRR val | 27.4103 | 0.9614 | 0.9704 | 0.0017 |
+| Six-set mean | 24.5308 | 0.8971 | 0.9468 | 0.0074 |
+
+Comparison against BP-RAP RIC formal/zero-shot references:
+
+| Dataset | PSNR Delta | Reading |
+| --- | ---: | --- |
+| CEILNet Table2 | -0.0260 | Essentially preserves BP-RAP RIC. |
+| Zhang real20, 512 | +0.0322 | Tiny gain. |
+| SIR2 Objects | +0.1154 | Small gain. |
+| SIR2 Postcard | +0.2404 | Clear gain. |
+| SIR2 Wild | -0.0469 | Essentially tied. |
+| OpenRR val | +0.5506 | Useful external target-domain gain over BP-RAP RIC zero-shot. |
+
+Interpretation:
+
+- Soup alpha=0.25 is the best balanced OpenRR extra-data result. It preserves
+  the course-data behavior of BP-RAP RIC while adding a meaningful OpenRR val
+  improvement.
+- It should not replace the course-fair main method in the main comparison
+  table because it uses OpenRR train data indirectly through the OpenRR-FT
+  checkpoint.
+- It is suitable as the final extra-data result:
+  `BP-RAP RIC + OpenRR-Soup (alpha=0.25)`.
+
+Decision:
+
+```text
+Course-fair main method: BP-RAP RIC.
+Extra-data final candidate: BP-RAP RIC + OpenRR-Soup alpha=0.25.
+Next stage: qualitative visualization and self-collected paired-data evaluation.
 ```
 
 ## 13. Hyper-Pretrained RAP Mid Evaluation
