@@ -47,6 +47,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_openrr_pairs", type=int, default=None, help="limit OpenRR training pairs")
     parser.add_argument("--use_extra_train", action="store_true", help="include generic data/extra_train paired data if available")
     parser.add_argument("--max_extra_pairs", type=int, default=None, help="limit generic extra_train pairs")
+    parser.add_argument("--use_course_replay", action="store_true", help="enable course-distribution replay sampling/distillation")
+    parser.add_argument("--openrr_ratio", type=float, default=None, help="target OpenRR sampling mass for weighted replay")
+    parser.add_argument("--course_replay_ratio", type=float, default=None, help="target VOC/Zhang sampling mass for weighted replay")
+    parser.add_argument("--samples_per_epoch", type=int, default=None, help="weighted-sampler samples per epoch")
+    parser.add_argument("--teacher_ckpt", default=None, help="teacher checkpoint for replay-anchored old-model distillation")
+    parser.add_argument("--lambda_old", type=float, default=None, help="weight for replay teacher distillation")
+    parser.add_argument("--old_loss_prob", type=float, default=None, help="probability of applying teacher distillation per batch")
     parser.add_argument("--backbone_lr", type=float, default=None, help="learning rate for ERRNet backbone parameter group")
     parser.add_argument("--new_lr", type=float, default=None, help="learning rate for RAP prior/gating/refinement parameter group")
     parser.add_argument("--use_ric", action="store_true", help="enable reflection-invariant consistency loss")
@@ -190,7 +197,9 @@ def build_train_dataset(args: argparse.Namespace, cfg: Mapping[str, Any]):
                     "openrr_train",
                     crop_size=crop_size,
                     image_size=image_size,
-                    max_pairs=args.max_openrr_pairs,
+                    max_pairs=args.max_openrr_pairs
+                    if args.max_openrr_pairs is not None
+                    else data_cfg.get("max_openrr_pairs"),
                 )
             )
         else:
@@ -204,7 +213,9 @@ def build_train_dataset(args: argparse.Namespace, cfg: Mapping[str, Any]):
                     "extra_train",
                     crop_size=crop_size,
                     image_size=image_size,
-                    max_pairs=args.max_extra_pairs,
+                    max_pairs=args.max_extra_pairs
+                    if args.max_extra_pairs is not None
+                    else data_cfg.get("max_extra_pairs"),
                 )
             )
         else:
@@ -226,7 +237,84 @@ def move_batch_to_device(batch: Mapping[str, Any], device) -> Dict[str, Any]:
     return moved
 
 
-LOSS_KEYS = ["total", "pix", "perc", "grad", "ssim", "mask", "clean", "anchor", "delta", "freq", "ric", "excl"]
+LOSS_KEYS = ["total", "pix", "perc", "grad", "ssim", "mask", "clean", "anchor", "delta", "freq", "ric", "old", "excl"]
+COURSE_REPLAY_DATASETS = {"voc", "zhang_train"}
+
+
+def _component_dataset_name(dataset) -> str:
+    return str(getattr(dataset, "dataset", dataset.__class__.__name__))
+
+
+def _build_weighted_sampler(dataset, args: argparse.Namespace, cfg: Mapping[str, Any]):
+    """Optional RAFA sampler that balances OpenRR and course replay samples."""
+
+    import torch
+    from torch.utils.data import WeightedRandomSampler
+
+    data_cfg = dict(cfg.get("data", {}))
+    train_cfg = dict(cfg.get("train", {}))
+    use_replay = bool(args.use_course_replay or data_cfg.get("use_course_replay", False))
+    openrr_ratio = args.openrr_ratio if args.openrr_ratio is not None else data_cfg.get("openrr_ratio")
+    course_ratio = (
+        args.course_replay_ratio
+        if args.course_replay_ratio is not None
+        else data_cfg.get("course_replay_ratio")
+    )
+    if not use_replay and openrr_ratio is None and course_ratio is None:
+        return None
+
+    children = getattr(dataset, "datasets", None)
+    cumulative = getattr(dataset, "cumulative_sizes", None)
+    if not children or not cumulative:
+        warnings.warn("Replay sampling requested but training dataset is not a ConcatDataset; using normal shuffle.", RuntimeWarning)
+        return None
+
+    groups: Dict[str, List[range]] = {"openrr": [], "course": [], "other": []}
+    start = 0
+    for child, end in zip(children, cumulative):
+        name = _component_dataset_name(child)
+        group = "openrr" if name == "openrr_train" else "course" if name in COURSE_REPLAY_DATASETS else "other"
+        groups[group].append(range(start, int(end)))
+        start = int(end)
+
+    group_counts = {key: sum(len(item) for item in ranges) for key, ranges in groups.items()}
+    masses: Dict[str, float] = {}
+    if openrr_ratio is not None and group_counts["openrr"] > 0:
+        masses["openrr"] = float(openrr_ratio)
+    if (course_ratio is not None or use_replay) and group_counts["course"] > 0:
+        if course_ratio is None:
+            course_ratio = max(0.0, 1.0 - float(openrr_ratio or 0.0))
+        masses["course"] = float(course_ratio)
+    used_mass = sum(max(value, 0.0) for value in masses.values())
+    if group_counts["other"] > 0:
+        masses["other"] = max(0.0, 1.0 - used_mass)
+    norm = sum(value for key, value in masses.items() if group_counts.get(key, 0) > 0 and value > 0)
+    if norm <= 0:
+        warnings.warn("Replay sampler had no positive sampling masses; using normal shuffle.", RuntimeWarning)
+        return None
+
+    weights = torch.zeros(len(dataset), dtype=torch.double)
+    summary = []
+    for group, ranges in groups.items():
+        count = group_counts[group]
+        if count <= 0:
+            continue
+        mass = max(0.0, masses.get(group, 0.0)) / norm
+        per_sample = mass / count if mass > 0 else 0.0
+        for index_range in ranges:
+            weights[list(index_range)] = per_sample
+        summary.append(f"{group}={mass:.3f}({count})")
+
+    samples_per_epoch = (
+        args.samples_per_epoch
+        if args.samples_per_epoch is not None
+        else data_cfg.get("samples_per_epoch", train_cfg.get("samples_per_epoch", len(dataset)))
+    )
+    samples_per_epoch = int(samples_per_epoch)
+    if samples_per_epoch <= 0:
+        raise ValueError(f"samples_per_epoch must be positive, got {samples_per_epoch}.")
+    print(f"[i] replay sampler enabled: samples_per_epoch={samples_per_epoch} " + " ".join(summary))
+    return WeightedRandomSampler(weights, num_samples=samples_per_epoch, replacement=True)
 
 
 def save_checkpoint(path: Path, model, optimizer, epoch: int, best_loss: float, stage: Mapping[str, Any] | None = None) -> None:
@@ -265,6 +353,7 @@ def append_log(path: Path, row: Mapping[str, Any]) -> None:
                 "delta",
                 "freq",
                 "ric",
+                "old",
                 "excl",
             ],
         )
@@ -446,6 +535,40 @@ def reflection_invariant_consistency_loss(
     return diff.mean()
 
 
+def _build_teacher_model(args: argparse.Namespace, cfg: Mapping[str, Any], ckpt_path: str | Path, device):
+    import torch
+
+    teacher = build_model(args, cfg).to(device)
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    state = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
+    teacher.load_state_dict(state, strict=False)
+    teacher.eval()
+    for param in teacher.parameters():
+        param.requires_grad = False
+    return teacher
+
+
+def _course_replay_indices(batch: Mapping[str, Any], device) -> Any:
+    import torch
+
+    input_tensor = batch.get("input")
+    if not isinstance(input_tensor, torch.Tensor):
+        return None
+    names = _batch_dataset_names(batch, int(input_tensor.shape[0]))
+    indices = [index for index, name in enumerate(names) if name in COURSE_REPLAY_DATASETS]
+    if not indices:
+        return None
+    return torch.tensor(indices, dtype=torch.long, device=device)
+
+
+def old_model_distillation_loss(outputs, teacher_outputs, indices) -> Any:
+    import torch
+
+    student = outputs["output"].index_select(0, indices)
+    teacher = teacher_outputs["output"].detach()
+    return torch.mean(torch.abs(student - teacher))
+
+
 def _format_seconds(seconds: float) -> str:
     seconds = max(0, int(seconds))
     hours, remainder = divmod(seconds, 3600)
@@ -500,11 +623,17 @@ def main() -> None:
     lambda_ric = float(loss_cfg.get("lambda_ric", 0.0))
     ric_prob = float(loss_cfg.get("ric_prob", 0.0))
     ric_prior_weight = float(loss_cfg.get("ric_prior_weight", 0.0))
+    lambda_old = float(args.lambda_old if args.lambda_old is not None else loss_cfg.get("lambda_old", 0.0))
+    old_loss_prob = float(args.old_loss_prob if args.old_loss_prob is not None else loss_cfg.get("old_loss_prob", 1.0))
+    teacher_ckpt = args.teacher_ckpt or train_cfg.get("teacher_ckpt") or loss_cfg.get("teacher_ckpt")
     if lambda_ric > 0 and not args.use_physics_synthesis:
         warnings.warn(
             "RIC is enabled but --use_physics_synthesis is off; RIC will be skipped because it only applies to VOC synthetic samples.",
             RuntimeWarning,
         )
+    if lambda_old > 0 and not teacher_ckpt:
+        warnings.warn("lambda_old > 0 but no --teacher_ckpt/train.teacher_ckpt was provided; old distillation is disabled.", RuntimeWarning)
+        lambda_old = 0.0
 
     seed = int(train_cfg.get("seed", 42))
     set_seed(seed)
@@ -513,13 +642,25 @@ def main() -> None:
     dataset = build_train_dataset(args, cfg)
     batch_size = int(args.batch_size or train_cfg.get("batch_size", 8))
     num_workers = int(args.num_workers if args.num_workers is not None else data_cfg.get("num_workers", 0))
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=device.type == "cuda")
+    sampler = _build_weighted_sampler(dataset, args, cfg)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=sampler is None,
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+    )
     print(
         f"[i] training samples={len(dataset)} batches_per_epoch={len(loader)} "
         f"batch_size={batch_size} device={device}"
     )
 
     model = build_model(args, cfg).to(device)
+    teacher_model = None
+    if lambda_old > 0:
+        teacher_model = _build_teacher_model(args, cfg, teacher_ckpt, device)
+        print(f"[i] loaded replay teacher from {teacher_ckpt}; lambda_old={lambda_old:.4f} old_loss_prob={old_loss_prob:.2f}")
     criterion = ReflectionRemovalLoss(cfg)
     epochs = int(args.epochs or train_cfg.get("epochs", 100))
     stages = _build_training_stages(train_cfg, args, epochs)
@@ -586,6 +727,15 @@ def main() -> None:
                     ric = reflection_invariant_consistency_loss(outputs, ric_outputs, ric_indices, ric_prior_weight)
                     losses["ric"] = ric
                     losses["total"] = losses["total"] + lambda_ric * ric
+            if teacher_model is not None and lambda_old > 0 and old_loss_prob > 0 and random.random() < old_loss_prob:
+                old_indices = _course_replay_indices(batch, device)
+                if old_indices is not None:
+                    old_input = batch["input"].index_select(0, old_indices)
+                    with torch.no_grad():
+                        teacher_outputs = teacher_model(old_input)
+                    old = old_model_distillation_loss(outputs, teacher_outputs, old_indices)
+                    losses["old"] = old
+                    losses["total"] = losses["total"] + lambda_old * old
             if optimizer is None:
                 raise RuntimeError("Optimizer was not initialized.")
             optimizer.zero_grad(set_to_none=True)
@@ -643,7 +793,7 @@ def main() -> None:
             f"epoch={epoch} stage={stage['name']} total={avg['total']:.6f} "
             f"pix={avg['pix']:.6f} grad={avg['grad']:.6f} "
             f"anchor={avg['anchor']:.6f} delta={avg['delta']:.6f} "
-            f"freq={avg['freq']:.6f} ric={avg['ric']:.6f}"
+            f"freq={avg['freq']:.6f} ric={avg['ric']:.6f} old={avg['old']:.6f}"
         )
 
 
