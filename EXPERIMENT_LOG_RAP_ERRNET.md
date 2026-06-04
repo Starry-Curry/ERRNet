@@ -1,6 +1,6 @@
 # RAP-ERRNet Experiment Log
 
-Last updated: 2026-05-23
+Last updated: 2026-06-04
 
 This document records the implementation and experiment progress for the course
 project method **RAP-ERRNet: Reflection-Aware Physics-guided ERRNet**.
@@ -25,7 +25,8 @@ The project has moved from implementation to experiment production.
 | OpenRR zero-shot external evaluation | Done | BP-RAP RIC improves OpenRR val over ERRNet by +1.37 dB PSNR and lower LMSE; see Section 12.1. |
 | OpenRR train download | Ready | `scripts/download_openrr.py` now uses the upstream archive name `trian_5k.zip` for the train split. |
 | Post-hoc calibration sweep | Done | Calibration did not improve over raw BP-RAP RIC; see Section 12.1.4. |
-| Checkpoint soup | Done | OpenRR-Soup alpha=0.25 is selected as the balanced extra-data candidate; see Section 12.1.6. |
+| Checkpoint soup | Done | OpenRR-Soup alpha=0.25 is a stable fallback; RAFA now supersedes it as the extra-data candidate. |
+| RAFA real-data adaptation | Done | Replay-anchored OpenRR1k adaptation improves OpenRR while preserving course-domain behavior; see Section 12.1.7. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
 
@@ -1140,6 +1141,124 @@ Decision:
 Course-fair main method: BP-RAP RIC.
 Extra-data final candidate: BP-RAP RIC + OpenRR-Soup alpha=0.25.
 Next stage: qualitative visualization and self-collected paired-data evaluation.
+```
+
+### 12.1.7 RAFA-OpenRR1k Formal Evaluation
+
+Purpose:
+
+- Turn the post-hoc OpenRR-Soup idea into a training-time adaptation algorithm.
+- Use OpenRR real paired supervision while replaying the course distribution
+  and distilling the previous BP-RAP RIC teacher to reduce source-domain drift.
+
+Method:
+
+```text
+RAFA = Replay-Anchored Fine-tuning for Real Reflection Adaptation
+Student init: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Teacher: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Training data: OpenRR train 1k + VOC physics synthesis + Zhang real89
+Sampling: OpenRR 0.5, course replay 0.5, samples_per_epoch=1200
+Stage: 10 epochs, backbone frozen, new-module lr=2.0e-5
+Loss additions: lambda_old=0.2, lambda_ric=0.02, lambda_anchor=0.05, lambda_delta=0.01
+Checkpoint: checkpoints/bp_rap_rafa_openrr1k_e10/best.pt
+```
+
+Training log reading:
+
+```text
+replay sampler enabled: samples_per_epoch=1200 openrr=0.500(1000) course=0.500(15376)
+loaded replay teacher from checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Final epoch total=0.069282 pix=0.046859 grad=0.016480
+anchor=0.007197 delta=0.015206 freq=0.000000 ric=0.023888 old=0.003380
+```
+
+RIC and old-model distillation were both active. `old` stayed small, so RAFA
+did not strongly pull the student away from the BP-RAP RIC teacher on replayed
+course samples.
+
+Fast 512 diagnostic:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2, 512 diagnostic | 24.0058 | 0.9068 | 0.9532 | 0.0071 |
+| Zhang real20, 512 | 21.0455 | 0.7830 | 0.8598 | 0.0254 |
+| SIR2 Objects, 512 diagnostic | 25.1987 | 0.9112 | 0.9830 | 0.0037 |
+| SIR2 Postcard, 512 diagnostic | 22.2188 | 0.8887 | 0.9457 | 0.0044 |
+| SIR2 Wild, 512 diagnostic | 25.5004 | 0.9154 | 0.9536 | 0.0051 |
+| OpenRR val, 512 diagnostic | 28.1260 | 0.9631 | 0.9738 | 0.0017 |
+| Six-set mean | 24.3492 | 0.8947 | 0.9449 | 0.0079 |
+
+Formal evaluation protocol:
+
+```text
+CEILNet/SIR2/OpenRR resize: none
+Zhang20/real20 resize: --max_long_edge 512
+Save dirs:
+  results/bp_rap_rafa_openrr1k_e10_standard
+  results/bp_rap_rafa_openrr1k_e10_zhang20_512
+```
+
+Formal metrics:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2 | 24.0058 | 0.9068 | 0.9532 | 0.0071 |
+| Zhang real20, 512 | 21.0455 | 0.7830 | 0.8598 | 0.0254 |
+| SIR2 Objects | 25.9817 | 0.9136 | 0.9862 | 0.0026 |
+| SIR2 Postcard | 22.6599 | 0.8945 | 0.9527 | 0.0036 |
+| SIR2 Wild | 26.0714 | 0.9202 | 0.9579 | 0.0040 |
+| OpenRR val | 27.7031 | 0.9620 | 0.9710 | 0.0016 |
+| Six-set mean | 24.5779 | 0.8967 | 0.9468 | 0.0074 |
+
+Comparison against OpenRR-Soup alpha=0.25:
+
+| Dataset | RAFA Delta | Reading |
+| --- | ---: | --- |
+| CEILNet Table2 | +0.0608 | RAFA slightly improves synthetic stability. |
+| Zhang real20, 512 | -0.0104 | Essentially tied. |
+| SIR2 Objects | -0.0242 | Essentially tied. |
+| SIR2 Postcard | -0.0284 | Essentially tied. |
+| SIR2 Wild | -0.0081 | Tied. |
+| OpenRR val | +0.2928 | RAFA gives a clear target-domain gain. |
+| Six-set mean | +0.0471 | Small but consistent aggregate gain. |
+
+Comparison against BP-RAP RIC:
+
+| Dataset | RAFA Delta | Reading |
+| --- | ---: | --- |
+| CEILNet Table2 | +0.0348 | No extra-data drift on CEILNet. |
+| Zhang real20, 512 | +0.0218 | Tiny gain. |
+| SIR2 Objects | +0.0912 | Small gain. |
+| SIR2 Postcard | +0.2120 | Clear gain. |
+| SIR2 Wild | -0.0550 | Essentially tied, slight drop. |
+| OpenRR val | +0.8434 | Strong external adaptation gain. |
+
+Module-only soup diagnostic:
+
+| Method | Six-set PSNR | SSIM | NCC | LMSE | Reading |
+| --- | ---: | ---: | ---: | ---: | --- |
+| RAFA | 24.3492 | 0.8947 | 0.9449 | 0.0079 | Best 512 diagnostic among this group. |
+| Module soup alpha=0.25 | 24.1850 | 0.8947 | 0.9447 | 0.0079 | Lower OpenRR and mean. |
+| Module soup alpha=0.50 | 24.2377 | 0.8949 | 0.9448 | 0.0079 | Still below RAFA. |
+| Module soup alpha=0.75 | 24.2953 | 0.8951 | 0.9449 | 0.0079 | Closest, but below RAFA. |
+
+Interpretation:
+
+- RAFA is currently the strongest extra-data method. It improves OpenRR more
+  than OpenRR-Soup alpha=0.25 while preserving CEILNet/Zhang/SIR2 behavior.
+- The result supports the v1.4 claim that replay and teacher distillation reduce
+  source-domain drift during real-data adaptation.
+- Module-only soup is a useful diagnostic but does not improve over the raw
+  RAFA checkpoint, so it is not selected.
+
+Decision:
+
+```text
+Course-fair main method: BP-RAP RIC.
+Current extra-data best method: BP-RAP RIC + RAFA-OpenRR1k.
+Fallback extra-data method: BP-RAP RIC + OpenRR-Soup alpha=0.25.
+Next stage: run more aggressive RAFA variants, starting with OpenRR3k.
 ```
 
 ## 13. Hyper-Pretrained RAP Mid Evaluation
