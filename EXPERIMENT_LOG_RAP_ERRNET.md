@@ -1,6 +1,6 @@
 # RAP-ERRNet Experiment Log
 
-Last updated: 2026-06-04
+Last updated: 2026-06-05
 
 This document records the implementation and experiment progress for the course
 project method **RAP-ERRNet: Reflection-Aware Physics-guided ERRNet**.
@@ -26,7 +26,8 @@ The project has moved from implementation to experiment production.
 | OpenRR train download | Ready | `scripts/download_openrr.py` now uses the upstream archive name `trian_5k.zip` for the train split. |
 | Post-hoc calibration sweep | Done | Calibration did not improve over raw BP-RAP RIC; see Section 12.1.4. |
 | Checkpoint soup | Done | OpenRR-Soup alpha=0.25 is a stable fallback; RAFA now supersedes it as the extra-data candidate. |
-| RAFA real-data adaptation | Done | Replay-anchored OpenRR1k adaptation improves OpenRR while preserving course-domain behavior; see Section 12.1.7. |
+| RAFA real-data adaptation | Done | Replay-anchored OpenRR3k is the current extra-data best method; see Section 12.1.8. |
+| Strength-balanced RAFA sampler | Ready | OpenRR replay can now be balanced by weak/strong and veil/ghost bins for the next aggressive run. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
 
@@ -1259,6 +1260,111 @@ Course-fair main method: BP-RAP RIC.
 Current extra-data best method: BP-RAP RIC + RAFA-OpenRR1k.
 Fallback extra-data method: BP-RAP RIC + OpenRR-Soup alpha=0.25.
 Next stage: run more aggressive RAFA variants, starting with OpenRR3k.
+```
+
+### 12.1.8 RAFA-OpenRR3k Formal Evaluation
+
+Purpose:
+
+- Test whether the RAFA recipe continues to improve when OpenRR real paired
+  supervision is scaled from 1k to 3k pairs.
+- Keep the same replay and teacher-distillation anchors to check whether larger
+  target-domain data causes source-domain drift.
+
+Method:
+
+```text
+Student init: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Teacher: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+Training data: OpenRR train 3k + VOC physics synthesis + Zhang real89
+Sampling: OpenRR 0.5, course replay 0.5, samples_per_epoch=1600
+Stage: 10 epochs, backbone frozen, new-module lr=2.0e-5
+Checkpoint: checkpoints/bp_rap_rafa_openrr3k_e10/best.pt
+```
+
+Training log reading:
+
+```text
+replay sampler enabled: samples_per_epoch=1600 openrr=0.500(3000) course=0.500(15376)
+Final epoch total=0.060293 pix=0.038125 grad=0.014804
+anchor=0.007316 delta=0.015498 freq=0.000000 ric=0.018659 old=0.003557
+```
+
+Fast 512 diagnostic:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2, 512 diagnostic | 24.0504 | 0.9076 | 0.9534 | 0.0072 |
+| Zhang real20, 512 | 21.0620 | 0.7821 | 0.8594 | 0.0256 |
+| SIR2 Objects, 512 diagnostic | 25.2383 | 0.9115 | 0.9831 | 0.0037 |
+| SIR2 Postcard, 512 diagnostic | 22.2176 | 0.8890 | 0.9461 | 0.0044 |
+| SIR2 Wild, 512 diagnostic | 25.5320 | 0.9155 | 0.9535 | 0.0051 |
+| OpenRR val, 512 diagnostic | 28.2869 | 0.9631 | 0.9735 | 0.0017 |
+| Six-set mean | 24.3979 | 0.8948 | 0.9448 | 0.0079 |
+
+Formal evaluation protocol:
+
+```text
+CEILNet/SIR2/OpenRR resize: none
+Zhang20/real20 resize: --max_long_edge 512
+Save dirs:
+  results/bp_rap_rafa_openrr3k_e10_standard
+  results/bp_rap_rafa_openrr3k_e10_zhang20_512
+```
+
+Formal metrics:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2 | 24.0504 | 0.9076 | 0.9534 | 0.0072 |
+| Zhang real20, 512 | 21.0620 | 0.7821 | 0.8594 | 0.0256 |
+| SIR2 Objects | 26.0450 | 0.9141 | 0.9863 | 0.0025 |
+| SIR2 Postcard | 22.6764 | 0.8948 | 0.9532 | 0.0036 |
+| SIR2 Wild | 26.1194 | 0.9203 | 0.9578 | 0.0040 |
+| OpenRR val | 27.8483 | 0.9618 | 0.9708 | 0.0016 |
+| Six-set mean | 24.6336 | 0.8968 | 0.9468 | 0.0074 |
+
+Comparison against RAFA-OpenRR1k:
+
+| Dataset | RAFA3k Delta | Reading |
+| --- | ---: | --- |
+| CEILNet Table2 | +0.0446 | Slight source-domain gain. |
+| Zhang real20, 512 | +0.0165 | Essentially tied, no drift. |
+| SIR2 Objects | +0.0633 | Small gain. |
+| SIR2 Postcard | +0.0165 | Tied. |
+| SIR2 Wild | +0.0480 | Small gain. |
+| OpenRR val | +0.1452 | Target-domain gain from more OpenRR data. |
+| Six-set mean | +0.0557 | Better aggregate result. |
+
+Comparison against BP-RAP RIC:
+
+| Dataset | RAFA3k Delta | Reading |
+| --- | ---: | --- |
+| CEILNet Table2 | +0.0794 | Stable on CEILNet. |
+| Zhang real20, 512 | +0.0383 | Tiny gain. |
+| SIR2 Objects | +0.1545 | Small gain. |
+| SIR2 Postcard | +0.2285 | Clear gain. |
+| SIR2 Wild | -0.0070 | Tied. |
+| OpenRR val | +0.9886 | Strong external adaptation gain. |
+
+Interpretation:
+
+- Scaling RAFA from OpenRR1k to OpenRR3k improves OpenRR and slightly improves
+  the six-dataset mean without introducing obvious CEILNet/Zhang/SIR2 drift.
+- RAFA3k is now the strongest extra-data checkpoint and should replace RAFA1k
+  as the main external-data result.
+- The next aggressive step is not ordinary longer fine-tuning. It is
+  reflection-strength balanced RAFA, which keeps OpenRR/course mass unchanged
+  but equalizes OpenRR sampling across weak/strong and veil/ghost reflection
+  types.
+
+Decision:
+
+```text
+Course-fair main method: BP-RAP RIC.
+Current extra-data best method: BP-RAP RIC + RAFA-OpenRR3k.
+Fallback extra-data method: BP-RAP RIC + RAFA-OpenRR1k or OpenRR-Soup alpha=0.25.
+Next stage: run BP-RAP RIC + RAFA-OpenRR3k with reflection-strength balanced OpenRR replay.
 ```
 
 ## 13. Hyper-Pretrained RAP Mid Evaluation

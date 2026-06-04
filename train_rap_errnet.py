@@ -13,7 +13,7 @@ import sys
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 try:
     import yaml
@@ -51,6 +51,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--openrr_ratio", type=float, default=None, help="target OpenRR sampling mass for weighted replay")
     parser.add_argument("--course_replay_ratio", type=float, default=None, help="target VOC/Zhang sampling mass for weighted replay")
     parser.add_argument("--samples_per_epoch", type=int, default=None, help="weighted-sampler samples per epoch")
+    parser.add_argument("--balance_openrr_bins", action="store_true", help="balance OpenRR replay by weak/strong and veil/ghost bins")
+    parser.add_argument("--reflection_bins_csv", default=None, help="optional CSV from tools/analyze_reflection_strength.py")
+    parser.add_argument("--reflection_bin_sigma", type=float, default=None, help="Gaussian sigma for on-the-fly reflection binning")
     parser.add_argument("--teacher_ckpt", default=None, help="teacher checkpoint for replay-anchored old-model distillation")
     parser.add_argument("--lambda_old", type=float, default=None, help="weight for replay teacher distillation")
     parser.add_argument("--old_loss_prob", type=float, default=None, help="probability of applying teacher distillation per batch")
@@ -245,8 +248,112 @@ def _component_dataset_name(dataset) -> str:
     return str(getattr(dataset, "dataset", dataset.__class__.__name__))
 
 
+def _gaussian_kernel1d(sigma: float, dtype, device):
+    import torch
+
+    sigma = max(float(sigma), 1e-3)
+    radius = max(1, int(round(3.0 * sigma)))
+    coords = torch.arange(-radius, radius + 1, dtype=dtype, device=device)
+    kernel = torch.exp(-(coords**2) / (2.0 * sigma * sigma))
+    return kernel / kernel.sum().clamp_min(1e-12)
+
+
+def _gaussian_blur(image, sigma: float):
+    import torch.nn.functional as F
+
+    if image.ndim != 4:
+        raise ValueError(f"expected BCHW tensor, got {tuple(image.shape)}")
+    channels = image.shape[1]
+    kernel = _gaussian_kernel1d(sigma, image.dtype, image.device)
+    radius = kernel.numel() // 2
+    kernel_x = kernel.view(1, 1, 1, -1).repeat(channels, 1, 1, 1)
+    kernel_y = kernel.view(1, 1, -1, 1).repeat(channels, 1, 1, 1)
+    x = F.pad(image, (radius, radius, 0, 0), mode="replicate")
+    x = F.conv2d(x, kernel_x, groups=channels)
+    x = F.pad(x, (0, 0, radius, radius), mode="replicate")
+    return F.conv2d(x, kernel_y, groups=channels)
+
+
+def _median(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return 0.5 * (ordered[mid - 1] + ordered[mid])
+
+
+def _assign_reflection_bin(strength: float, hf_ratio: float, strength_mid: float, hf_mid: float) -> str:
+    strength_tag = "strong" if strength >= strength_mid else "weak"
+    freq_tag = "ghost" if hf_ratio >= hf_mid else "veil"
+    return f"{strength_tag}_{freq_tag}"
+
+
+def _pair_sample_name(dataset, index: int) -> str:
+    pairs = getattr(dataset, "pairs", None)
+    if pairs and 0 <= index < len(pairs):
+        return Path(pairs[index][0]).stem
+    return str(index)
+
+
+def _load_reflection_bins_csv(path: Optional[str | Path]) -> Dict[str, str]:
+    if not path:
+        return {}
+    csv_path = Path(path)
+    if not csv_path.exists():
+        warnings.warn(f"reflection_bins_csv was provided but does not exist: {csv_path}", RuntimeWarning)
+        return {}
+
+    bins: Dict[str, str] = {}
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get("dataset") != "openrr_train":
+                continue
+            name = str(row.get("name", "")).strip()
+            bin_name = str(row.get("bin", "")).strip()
+            if name and bin_name:
+                bins[name] = bin_name
+    return bins
+
+
+def _compute_reflection_bins(dataset, sigma: float) -> List[str]:
+    import torch
+
+    print("[i] computing OpenRR reflection bins for balanced sampler; this may take a few minutes")
+    rows: List[Dict[str, float]] = []
+    with torch.no_grad():
+        for index in range(len(dataset)):
+            sample = dataset[index]
+            diff = (sample["input"] - sample["target"]).abs().float().unsqueeze(0)
+            strength = float(diff.mean())
+            high = diff - _gaussian_blur(diff, sigma)
+            hf_ratio = float(high.abs().mean() / diff.mean().clamp_min(1e-6))
+            rows.append({"strength": strength, "hf_ratio": hf_ratio})
+
+    strength_mid = _median([row["strength"] for row in rows])
+    hf_mid = _median([row["hf_ratio"] for row in rows])
+    return [_assign_reflection_bin(row["strength"], row["hf_ratio"], strength_mid, hf_mid) for row in rows]
+
+
+def _openrr_bin_assignments(dataset, csv_path: Optional[str | Path], sigma: float) -> List[str]:
+    csv_bins = _load_reflection_bins_csv(csv_path)
+    if csv_bins:
+        names = [_pair_sample_name(dataset, index) for index in range(len(dataset))]
+        if all(name in csv_bins for name in names):
+            return [csv_bins[name] for name in names]
+        warnings.warn(
+            "reflection_bins_csv does not cover all OpenRR training pairs; computing bins on the fly.",
+            RuntimeWarning,
+        )
+    return _compute_reflection_bins(dataset, sigma)
+
+
 def _build_weighted_sampler(dataset, args: argparse.Namespace, cfg: Mapping[str, Any]):
     """Optional RAFA sampler that balances OpenRR and course replay samples."""
+
+    from collections import Counter
 
     import torch
     from torch.utils.data import WeightedRandomSampler
@@ -254,13 +361,14 @@ def _build_weighted_sampler(dataset, args: argparse.Namespace, cfg: Mapping[str,
     data_cfg = dict(cfg.get("data", {}))
     train_cfg = dict(cfg.get("train", {}))
     use_replay = bool(args.use_course_replay or data_cfg.get("use_course_replay", False))
+    balance_openrr_bins = bool(args.balance_openrr_bins or data_cfg.get("balance_openrr_bins", False))
     openrr_ratio = args.openrr_ratio if args.openrr_ratio is not None else data_cfg.get("openrr_ratio")
     course_ratio = (
         args.course_replay_ratio
         if args.course_replay_ratio is not None
         else data_cfg.get("course_replay_ratio")
     )
-    if not use_replay and openrr_ratio is None and course_ratio is None:
+    if not use_replay and not balance_openrr_bins and openrr_ratio is None and course_ratio is None:
         return None
 
     children = getattr(dataset, "datasets", None)
@@ -270,11 +378,14 @@ def _build_weighted_sampler(dataset, args: argparse.Namespace, cfg: Mapping[str,
         return None
 
     groups: Dict[str, List[range]] = {"openrr": [], "course": [], "other": []}
+    components: List[Dict[str, Any]] = []
     start = 0
     for child, end in zip(children, cumulative):
         name = _component_dataset_name(child)
         group = "openrr" if name == "openrr_train" else "course" if name in COURSE_REPLAY_DATASETS else "other"
-        groups[group].append(range(start, int(end)))
+        end = int(end)
+        groups[group].append(range(start, end))
+        components.append({"dataset": child, "name": name, "group": group, "start": start, "end": end})
         start = int(end)
 
     group_counts = {key: sum(len(item) for item in ranges) for key, ranges in groups.items()}
@@ -304,6 +415,40 @@ def _build_weighted_sampler(dataset, args: argparse.Namespace, cfg: Mapping[str,
         for index_range in ranges:
             weights[list(index_range)] = per_sample
         summary.append(f"{group}={mass:.3f}({count})")
+
+    if balance_openrr_bins:
+        openrr_mass = max(0.0, masses.get("openrr", 0.0)) / norm if group_counts["openrr"] > 0 else 0.0
+        if openrr_mass <= 0:
+            warnings.warn("balance_openrr_bins requested but OpenRR sampling mass is zero.", RuntimeWarning)
+        else:
+            csv_path = args.reflection_bins_csv or data_cfg.get("reflection_bins_csv")
+            sigma = float(
+                args.reflection_bin_sigma
+                if args.reflection_bin_sigma is not None
+                else data_cfg.get("reflection_bin_sigma", 3.0)
+            )
+            openrr_items: List[tuple[int, str]] = []
+            for component in components:
+                if component["group"] != "openrr":
+                    continue
+                child = component["dataset"]
+                bins = _openrr_bin_assignments(child, csv_path, sigma)
+                expected = int(component["end"]) - int(component["start"])
+                if len(bins) != expected:
+                    raise RuntimeError(f"OpenRR bin count mismatch: expected {expected}, got {len(bins)}")
+                for local_index, bin_name in enumerate(bins):
+                    openrr_items.append((int(component["start"]) + local_index, bin_name))
+
+            bin_counts = Counter(bin_name for _, bin_name in openrr_items)
+            active_bins = sorted(bin_name for bin_name, count in bin_counts.items() if count > 0)
+            if active_bins:
+                per_bin_mass = openrr_mass / len(active_bins)
+                for global_index, bin_name in openrr_items:
+                    weights[global_index] = per_bin_mass / bin_counts[bin_name]
+                summary.append(
+                    "openrr_bins="
+                    + ",".join(f"{bin_name}:{bin_counts[bin_name]}" for bin_name in active_bins)
+                )
 
     samples_per_epoch = (
         args.samples_per_epoch
