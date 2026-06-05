@@ -27,7 +27,7 @@ The project has moved from implementation to experiment production.
 | Post-hoc calibration sweep | Done | Calibration did not improve over raw BP-RAP RIC; see Section 12.1.4. |
 | Checkpoint soup | Done | OpenRR-Soup alpha=0.25 is a stable fallback; RAFA now supersedes it as the extra-data candidate. |
 | RAFA real-data adaptation | Done | Replay-anchored OpenRR3k is the current extra-data best method; see Section 12.1.8. |
-| Strength-balanced RAFA sampler | Ready | OpenRR replay can now be balanced by weak/strong and veil/ghost bins for the next aggressive run. |
+| Strength-balanced RAFA sampler | Done | Balanced OpenRR replay gives a very small formal mean gain over RAFA3k; see Section 12.1.9. |
 | Ablation experiments | Pending | No-prior, no-gating, no-refinement variants. |
 | Self-collected data | Pending | Need at least 5 paired scenes. |
 
@@ -1365,6 +1365,91 @@ Course-fair main method: BP-RAP RIC.
 Current extra-data best method: BP-RAP RIC + RAFA-OpenRR3k.
 Fallback extra-data method: BP-RAP RIC + RAFA-OpenRR1k or OpenRR-Soup alpha=0.25.
 Next stage: run BP-RAP RIC + RAFA-OpenRR3k with reflection-strength balanced OpenRR replay.
+```
+
+### 12.1.9 Strength-Balanced RAFA-OpenRR3k Formal Evaluation
+
+Purpose:
+
+- Test whether OpenRR replay should be balanced by reflection type rather than
+  sampled uniformly inside the OpenRR subset.
+- Keep the same OpenRR/course replay mass as RAFA3k while equalizing OpenRR
+  sampling across weak/strong and veil/ghost bins.
+
+Method:
+
+```text
+Checkpoint: checkpoints/bp_rap_rafa_openrr3k_balanced_e10/best.pt
+Config: configs/bp_rap_rafa_openrr3k_balanced.yaml
+Bins: results/reflection_strength_openrr3k_zhang.csv
+OpenRR bin counts: strong_ghost=377, strong_veil=1123, weak_ghost=1123, weak_veil=377
+Sampling: OpenRR 0.5, course replay 0.5, OpenRR bin-balanced
+Stage: 10 epochs, backbone frozen, new-module lr=2.0e-5
+```
+
+Training log reading:
+
+```text
+replay sampler enabled: samples_per_epoch=1600 openrr=0.500(3000) course=0.500(15376)
+openrr_bins=strong_ghost:377,strong_veil:1123,weak_ghost:1123,weak_veil:377
+Final epoch total=0.059048 pix=0.036921 grad=0.015360
+anchor=0.007251 delta=0.015367 freq=0.000000 ric=0.018649 old=0.003499
+```
+
+Fast 512 diagnostic:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2, 512 diagnostic | 24.0417 | 0.9073 | 0.9533 | 0.0072 |
+| Zhang real20, 512 | 21.0535 | 0.7827 | 0.8591 | 0.0256 |
+| SIR2 Objects, 512 diagnostic | 25.2540 | 0.9115 | 0.9831 | 0.0037 |
+| SIR2 Postcard, 512 diagnostic | 22.2387 | 0.8887 | 0.9461 | 0.0044 |
+| SIR2 Wild, 512 diagnostic | 25.5530 | 0.9157 | 0.9535 | 0.0051 |
+| OpenRR val, 512 diagnostic | 28.2763 | 0.9631 | 0.9734 | 0.0017 |
+| Six-set mean | 24.4029 | 0.8948 | 0.9448 | 0.0079 |
+
+Formal metrics:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2 | 24.0417 | 0.9073 | 0.9533 | 0.0072 |
+| Zhang real20, 512 | 21.0535 | 0.7827 | 0.8591 | 0.0256 |
+| SIR2 Objects | 26.0617 | 0.9141 | 0.9863 | 0.0025 |
+| SIR2 Postcard | 22.6947 | 0.8945 | 0.9531 | 0.0036 |
+| SIR2 Wild | 26.1477 | 0.9205 | 0.9578 | 0.0040 |
+| OpenRR val | 27.8349 | 0.9618 | 0.9707 | 0.0016 |
+| Six-set mean | 24.6390 | 0.8968 | 0.9467 | 0.0074 |
+
+Comparison against uniform RAFA-OpenRR3k:
+
+| Dataset | Balanced Delta | Reading |
+| --- | ---: | --- |
+| CEILNet Table2 | -0.0087 | Essentially tied. |
+| Zhang real20, 512 | -0.0085 | Essentially tied. |
+| SIR2 Objects | +0.0167 | Tiny gain. |
+| SIR2 Postcard | +0.0183 | Tiny gain. |
+| SIR2 Wild | +0.0283 | Small gain. |
+| OpenRR val | -0.0134 | Essentially tied. |
+| Six-set mean | +0.0054 | Marginal aggregate gain. |
+
+Interpretation:
+
+- Strength-balanced RAFA does not produce a large numerical gain, but it is
+  stable and slightly improves the formal six-dataset PSNR mean.
+- The main effect is on SIR2, where all three subsets improve slightly. CEILNet,
+  Zhang20, and OpenRR change by less than 0.02 dB.
+- Because the gain is marginal, report it as a targeted sampling ablation rather
+  than overclaiming it as a major improvement.
+
+Decision:
+
+```text
+Metric-best extra-data checkpoint by formal mean: BP-RAP RIC + strength-balanced RAFA-OpenRR3k.
+Simpler/stable extra-data checkpoint: BP-RAP RIC + uniform RAFA-OpenRR3k.
+Recommended report framing: use RAFA3k as the main adaptation algorithm and
+strength-balanced RAFA as an optional sampling refinement with marginal gains.
+Next stage: stop broad training sweeps; prioritize visualizations, self-collected
+data, and focused ablations.
 ```
 
 ## 13. Hyper-Pretrained RAP Mid Evaluation
