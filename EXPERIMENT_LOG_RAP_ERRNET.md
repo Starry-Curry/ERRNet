@@ -1452,6 +1452,59 @@ Next stage: stop broad training sweeps; prioritize visualizations, self-collecte
 data, and focused ablations.
 ```
 
+### 12.1.10 RAFA-OpenRR3k Old04 Diagnostic
+
+Purpose:
+
+- Test one conservative training optimization before switching to final
+  visualization: strengthen replay teacher anchoring from `lambda_old=0.2` to
+  `lambda_old=0.4`.
+- Check whether stronger distillation recovers CEILNet/Zhang behavior without
+  losing the OpenRR/SIR2 gains from RAFA3k.
+
+Method:
+
+```text
+Checkpoint: checkpoints/bp_rap_rafa_openrr3k_old04_e10/best.pt
+Config: configs/bp_rap_rafa_openrr3k_old04.yaml
+Training data: OpenRR train 3k + VOC physics synthesis + Zhang real89
+Sampling: OpenRR 0.5, course replay 0.5, samples_per_epoch=1600
+Change from RAFA3k: lambda_old 0.2 -> 0.4
+```
+
+Fast 512 diagnostic:
+
+| Dataset | PSNR | SSIM | NCC | LMSE |
+| --- | ---: | ---: | ---: | ---: |
+| CEILNet Table2, 512 diagnostic | 24.0267 | 0.9078 | 0.9534 | 0.0071 |
+| Zhang real20, 512 | 21.0571 | 0.7827 | 0.8597 | 0.0256 |
+| SIR2 Objects, 512 diagnostic | 25.1938 | 0.9112 | 0.9829 | 0.0037 |
+| SIR2 Postcard, 512 diagnostic | 22.1628 | 0.8890 | 0.9461 | 0.0043 |
+| SIR2 Wild, 512 diagnostic | 25.5268 | 0.9156 | 0.9535 | 0.0051 |
+| OpenRR val, 512 diagnostic | 28.0531 | 0.9627 | 0.9733 | 0.0017 |
+| Six-set mean | 24.3367 | 0.8948 | 0.9448 | 0.0079 |
+
+Comparison against uniform RAFA-OpenRR3k 512 diagnostic:
+
+| Dataset | Old04 Delta | Reading |
+| --- | ---: | --- |
+| CEILNet Table2 | -0.0237 | No recovery. |
+| Zhang real20, 512 | -0.0049 | Tied. |
+| SIR2 Objects | -0.0445 | Worse. |
+| SIR2 Postcard | -0.0548 | Worse. |
+| SIR2 Wild | -0.0052 | Tied. |
+| OpenRR val | -0.2338 | Clear target-domain regression. |
+| Six-set mean | -0.0612 | Worse aggregate result. |
+
+Decision:
+
+```text
+Do not formally evaluate old04.
+Do not increase lambda_old further.
+Keep final extra-data candidates as RAFA3k and strength-balanced RAFA3k.
+Next stage: final visualizations, self-collected data, and focused ablations.
+```
+
 ## 13. Hyper-Pretrained RAP Mid Evaluation
 
 Snapshot:
