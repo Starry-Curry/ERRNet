@@ -8,9 +8,10 @@ Input | ERRNet | BP-RAP RIC | RAFA | GT | Error | Prior
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -33,6 +34,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_long_edge", type=int, default=512)
     parser.add_argument("--row_width", type=int, default=2450, help="resize each comparison row to this width")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    parser.add_argument(
+        "--selection_mode",
+        choices=["even", "delta_groups"],
+        default="even",
+        help="even selects evenly spaced samples; delta_groups selects better/similar/worse vs ERRNet",
+    )
+    parser.add_argument("--group_size", type=int, default=2, help="samples per better/similar/worse group")
+    parser.add_argument("--similar_abs_delta", type=float, default=0.2, help="PSNR delta threshold for similar group")
 
     parser.add_argument("--errnet_ckpt", default="checkpoints/errnet/errnet_060_00463920.pt")
     parser.add_argument("--errnet_hyper", action="store_true", help="load ERRNet baseline with hypercolumn input")
@@ -95,16 +104,19 @@ def _resize_width(image: Image.Image, width: int) -> Image.Image:
     return image.resize((width, height), resample)
 
 
-def _make_row(columns: Sequence[np.ndarray], labels: Sequence[str], row_width: int) -> Image.Image:
+def _make_row(columns: Sequence[np.ndarray], labels: Sequence[str], row_width: int, title: str | None = None) -> Image.Image:
     height = min(column.shape[0] for column in columns)
     width = min(column.shape[1] for column in columns)
     cropped = [_center_crop(column, height, width) for column in columns]
-    header_h = 28
+    header_h = 52 if title else 28
     canvas = Image.new("RGB", (width * len(cropped), height + header_h), "white")
     draw = ImageDraw.Draw(canvas)
+    label_y = 31 if title else 7
+    if title:
+        draw.text((8, 7), title, fill=(20, 20, 20))
     for idx, (column, label) in enumerate(zip(cropped, labels)):
         x = idx * width
-        draw.text((x + 8, 7), label, fill=(20, 20, 20))
+        draw.text((x + 8, label_y), label, fill=(20, 20, 20))
         canvas.paste(Image.fromarray(column), (x, header_h))
     return _resize_width(canvas, row_width)
 
@@ -131,6 +143,90 @@ def _forward(model, input_tensor: torch.Tensor) -> Dict[str, torch.Tensor]:
     return outputs
 
 
+def _score_dataset(
+    dataset,
+    errnet,
+    rafa,
+    device,
+) -> List[Dict[str, Any]]:
+    from metrics.reflection_metrics import compute_metrics
+
+    records: List[Dict[str, Any]] = []
+    for index in range(len(dataset)):
+        sample = dataset[index]
+        input_tensor = sample["input"].unsqueeze(0).to(device)
+        target = sample["target"]
+        errnet_out = _resize_chw(_forward(errnet, input_tensor)["output"][0].clamp(0.0, 1.0), target.shape[-2:])
+        rafa_out = _resize_chw(_forward(rafa, input_tensor)["output"][0].clamp(0.0, 1.0), target.shape[-2:])
+        errnet_metrics = compute_metrics(errnet_out, target)
+        rafa_metrics = compute_metrics(rafa_out, target)
+        records.append(
+            {
+                "index": index,
+                "name": str(sample["name"]),
+                "errnet_psnr": float(errnet_metrics["PSNR"]),
+                "rafa_psnr": float(rafa_metrics["PSNR"]),
+                "delta_psnr": float(rafa_metrics["PSNR"]) - float(errnet_metrics["PSNR"]),
+                "errnet_ssim": float(errnet_metrics["SSIM"]),
+                "rafa_ssim": float(rafa_metrics["SSIM"]),
+                "delta_ssim": float(rafa_metrics["SSIM"]) - float(errnet_metrics["SSIM"]),
+            }
+        )
+    return records
+
+
+def _take_unique(records: Sequence[Mapping[str, Any]], count: int) -> List[Mapping[str, Any]]:
+    selected: List[Mapping[str, Any]] = []
+    seen = set()
+    for record in records:
+        index = int(record["index"])
+        if index in seen:
+            continue
+        selected.append(record)
+        seen.add(index)
+        if len(selected) >= count:
+            break
+    return selected
+
+
+def _select_delta_groups(
+    records: Sequence[Mapping[str, Any]],
+    group_size: int,
+    similar_abs_delta: float,
+) -> Dict[str, List[Mapping[str, Any]]]:
+    better = [row for row in records if float(row["delta_psnr"]) >= similar_abs_delta]
+    worse = [row for row in records if float(row["delta_psnr"]) <= -similar_abs_delta]
+    if len(better) < group_size:
+        better = [row for row in records if float(row["delta_psnr"]) > 0]
+    if len(worse) < group_size:
+        worse = [row for row in records if float(row["delta_psnr"]) < 0]
+    return {
+        "better": _take_unique(sorted(better, key=lambda row: float(row["delta_psnr"]), reverse=True), group_size),
+        "similar": _take_unique(sorted(records, key=lambda row: abs(float(row["delta_psnr"]))), group_size),
+        "worse": _take_unique(sorted(worse, key=lambda row: float(row["delta_psnr"])), group_size),
+    }
+
+
+def _write_selection_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "dataset",
+        "group",
+        "index",
+        "name",
+        "errnet_psnr",
+        "rafa_psnr",
+        "delta_psnr",
+        "errnet_ssim",
+        "rafa_ssim",
+        "delta_ssim",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def build_visuals(args: argparse.Namespace) -> None:
     import torch
 
@@ -147,6 +243,7 @@ def build_visuals(args: argparse.Namespace) -> None:
 
     labels = ["Input", "ERRNet", "BP-RAP RIC", args.rafa_label, "GT", "Error", "Prior"]
     overview_rows: List[Image.Image] = []
+    selection_rows: List[Dict[str, Any]] = []
     for dataset_name in [item.strip() for item in args.datasets.split(",") if item.strip()]:
         dataset = UnifiedReflectionDataset(
             data_root,
@@ -156,7 +253,24 @@ def build_visuals(args: argparse.Namespace) -> None:
             max_long_edge=args.max_long_edge,
         )
         dataset_rows: List[Image.Image] = []
-        for index in _select_indices(len(dataset), args.max_images):
+        selected: List[Dict[str, Any]] = []
+        if args.selection_mode == "delta_groups":
+            records = _score_dataset(dataset, errnet, rafa, device)
+            groups = _select_delta_groups(records, int(args.group_size), float(args.similar_abs_delta))
+            for group_name in ["better", "similar", "worse"]:
+                for record in groups[group_name]:
+                    row = {"dataset": dataset_name, "group": group_name, **dict(record)}
+                    selected.append(row)
+                    selection_rows.append(row)
+        else:
+            selected = [
+                {"dataset": dataset_name, "group": "even", "index": index, "name": ""}
+                for index in _select_indices(len(dataset), args.max_images)
+            ]
+
+        group_rows: Dict[str, List[Image.Image]] = {}
+        for selected_record in selected:
+            index = int(selected_record["index"])
             sample = dataset[index]
             name = str(sample["name"])
             input_tensor = sample["input"].unsqueeze(0).to(device)
@@ -183,16 +297,30 @@ def build_visuals(args: argparse.Namespace) -> None:
                 _error_map(rafa_out, target),
                 _tensor_to_rgb(prior_tensor),
             ]
-            row = _make_row(columns, labels, args.row_width)
-            row_path = out_dir / "rows" / dataset_name / f"{name}.png"
+            group_name = str(selected_record.get("group", "even"))
+            delta = selected_record.get("delta_psnr")
+            title = f"{dataset_name}/{name} [{group_name}]"
+            if delta is not None:
+                title += (
+                    f"  PSNR: ERRNet {float(selected_record['errnet_psnr']):.2f}, "
+                    f"{args.rafa_label} {float(selected_record['rafa_psnr']):.2f}, "
+                    f"delta {float(delta):+.2f} dB"
+                )
+            row = _make_row(columns, labels, args.row_width, title=title)
+            row_path = out_dir / "rows" / dataset_name / group_name / f"{name}.png"
             row_path.parent.mkdir(parents=True, exist_ok=True)
             row.save(row_path)
             dataset_rows.append(row)
+            group_rows.setdefault(group_name, []).append(row)
             overview_rows.append(row)
 
         _stack_rows(dataset_rows, out_dir / "contact_sheets" / f"{dataset_name}.png")
+        for group_name, rows in group_rows.items():
+            _stack_rows(rows, out_dir / "contact_sheets" / f"{dataset_name}_{group_name}.png")
 
     _stack_rows(overview_rows, out_dir / "contact_sheets" / "overview.png")
+    if selection_rows:
+        _write_selection_csv(out_dir / "selection_summary.csv", selection_rows)
     print(out_dir)
 
 
