@@ -23,6 +23,13 @@ if str(REPO_ROOT) not in sys.path:
 
 
 DEFAULT_DATASETS = "ceilnet,zhang20,sir2_objects,sir2_postcard,sir2_wild,openrr_val"
+GROUP_ORDER = ("better", "similar", "worse")
+GROUP_TITLES = {
+    "better": "Better than ERRNet",
+    "similar": "Similar to ERRNet",
+    "worse": "Worse than ERRNet",
+    "even": "Evenly sampled examples",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "--selection_mode",
         choices=["even", "delta_groups"],
         default="even",
-        help="even selects evenly spaced samples; delta_groups selects better/similar/worse vs ERRNet",
+        help="even selects evenly spaced samples; delta_groups builds one per-dataset figure with better/similar/worse sections",
     )
     parser.add_argument("--group_size", type=int, default=2, help="samples per better/similar/worse group")
     parser.add_argument("--similar_abs_delta", type=float, default=0.2, help="PSNR delta threshold for similar group")
@@ -133,6 +140,28 @@ def _stack_rows(rows: Sequence[Image.Image], output_path: Path) -> None:
         y += row.height
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path)
+
+
+def _section_header(width: int, text: str) -> Image.Image:
+    height = 40
+    canvas = Image.new("RGB", (width, height), (245, 245, 245))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((12, 12), text, fill=(20, 20, 20))
+    return canvas
+
+
+def _stack_grouped_rows(group_rows: Mapping[str, Sequence[Image.Image]], output_path: Path) -> None:
+    ordered_rows: List[Image.Image] = []
+    width = max((row.width for rows in group_rows.values() for row in rows), default=0)
+    if width <= 0:
+        return
+    for group_name in [*GROUP_ORDER, "even"]:
+        rows = list(group_rows.get(group_name, []))
+        if not rows:
+            continue
+        ordered_rows.append(_section_header(width, GROUP_TITLES.get(group_name, group_name)))
+        ordered_rows.extend(rows)
+    _stack_rows(ordered_rows, output_path)
 
 
 def _forward(model, input_tensor: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -257,7 +286,7 @@ def build_visuals(args: argparse.Namespace) -> None:
         if args.selection_mode == "delta_groups":
             records = _score_dataset(dataset, errnet, rafa, device)
             groups = _select_delta_groups(records, int(args.group_size), float(args.similar_abs_delta))
-            for group_name in ["better", "similar", "worse"]:
+            for group_name in GROUP_ORDER:
                 for record in groups[group_name]:
                     row = {"dataset": dataset_name, "group": group_name, **dict(record)}
                     selected.append(row)
@@ -314,9 +343,10 @@ def build_visuals(args: argparse.Namespace) -> None:
             group_rows.setdefault(group_name, []).append(row)
             overview_rows.append(row)
 
-        _stack_rows(dataset_rows, out_dir / "contact_sheets" / f"{dataset_name}.png")
-        for group_name, rows in group_rows.items():
-            _stack_rows(rows, out_dir / "contact_sheets" / f"{dataset_name}_{group_name}.png")
+        if args.selection_mode == "delta_groups":
+            _stack_grouped_rows(group_rows, out_dir / "contact_sheets" / f"{dataset_name}.png")
+        else:
+            _stack_rows(dataset_rows, out_dir / "contact_sheets" / f"{dataset_name}.png")
 
     _stack_rows(overview_rows, out_dir / "contact_sheets" / "overview.png")
     if selection_rows:
