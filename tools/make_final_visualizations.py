@@ -43,9 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument(
         "--selection_mode",
-        choices=["even", "delta_groups"],
+        choices=["even", "delta_groups", "top_better"],
         default="even",
-        help="even selects evenly spaced samples; delta_groups builds one per-dataset figure with better/similar/worse sections",
+        help=(
+            "even selects evenly spaced samples; delta_groups builds one per-dataset figure with "
+            "better/similar/worse sections; top_better selects the strongest RAFA-over-ERRNet examples globally"
+        ),
     )
     parser.add_argument("--group_size", type=int, default=2, help="samples per better/similar/worse group")
     parser.add_argument("--similar_abs_delta", type=float, default=0.2, help="PSNR delta threshold for similar group")
@@ -236,6 +239,12 @@ def _select_delta_groups(
     }
 
 
+def _select_top_better(records: Sequence[Mapping[str, Any]], count: int) -> List[Mapping[str, Any]]:
+    positive = [row for row in records if float(row["delta_psnr"]) > 0]
+    pool = positive if len(positive) >= count else list(records)
+    return _take_unique(sorted(pool, key=lambda row: float(row["delta_psnr"]), reverse=True), count)
+
+
 def _write_selection_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -256,6 +265,65 @@ def _write_selection_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _render_selected_row(
+    *,
+    dataset_name: str,
+    dataset,
+    selected_record: Mapping[str, Any],
+    errnet,
+    bprap,
+    rafa,
+    device,
+    labels: Sequence[str],
+    row_width: int,
+    rafa_label: str,
+    out_dir: Path,
+) -> Image.Image:
+    import torch
+
+    index = int(selected_record["index"])
+    sample = dataset[index]
+    name = str(sample["name"])
+    input_tensor = sample["input"].unsqueeze(0).to(device)
+    target = sample["target"]
+
+    errnet_out = _forward(errnet, input_tensor)["output"][0].clamp(0.0, 1.0)
+    bprap_out = _forward(bprap, input_tensor)["output"][0].clamp(0.0, 1.0)
+    rafa_outputs = _forward(rafa, input_tensor)
+    rafa_out = rafa_outputs["output"][0].clamp(0.0, 1.0)
+    prior = rafa_outputs.get("prior")
+    prior_tensor = prior[0].detach().float().cpu().clamp(0.0, 1.0) if prior is not None else torch.zeros_like(target[:1])
+    target_size = target.shape[-2:]
+    errnet_out = _resize_chw(errnet_out, target_size)
+    bprap_out = _resize_chw(bprap_out, target_size)
+    rafa_out = _resize_chw(rafa_out, target_size)
+    prior_tensor = _resize_chw(prior_tensor, target_size)
+
+    columns = [
+        _tensor_to_rgb(sample["input"]),
+        _tensor_to_rgb(errnet_out),
+        _tensor_to_rgb(bprap_out),
+        _tensor_to_rgb(rafa_out),
+        _tensor_to_rgb(target),
+        _error_map(rafa_out, target),
+        _tensor_to_rgb(prior_tensor),
+    ]
+    group_name = str(selected_record.get("group", "selected"))
+    delta = selected_record.get("delta_psnr")
+    title = f"{dataset_name}/{name} [{group_name}]"
+    if delta is not None:
+        title += (
+            f"  PSNR: ERRNet {float(selected_record['errnet_psnr']):.2f}, "
+            f"{rafa_label} {float(selected_record['rafa_psnr']):.2f}, "
+            f"delta {float(delta):+.2f} dB"
+        )
+    row = _make_row(columns, labels, row_width, title=title)
+    row_path = out_dir / "rows" / dataset_name / group_name / f"{name}.png"
+    row_path.parent.mkdir(parents=True, exist_ok=True)
+    row.save(row_path)
+    return row
+
+
 def build_visuals(args: argparse.Namespace) -> None:
     import torch
 
@@ -273,7 +341,46 @@ def build_visuals(args: argparse.Namespace) -> None:
     labels = ["Input", "ERRNet", "BP-RAP RIC", args.rafa_label, "GT", "Error", "Prior"]
     overview_rows: List[Image.Image] = []
     selection_rows: List[Dict[str, Any]] = []
-    for dataset_name in [item.strip() for item in args.datasets.split(",") if item.strip()]:
+    dataset_names = [item.strip() for item in args.datasets.split(",") if item.strip()]
+
+    if args.selection_mode == "top_better":
+        datasets = {}
+        all_records: List[Dict[str, Any]] = []
+        for dataset_name in dataset_names:
+            dataset = UnifiedReflectionDataset(
+                data_root,
+                dataset_name,
+                crop_size=None,
+                image_size=None,
+                max_long_edge=args.max_long_edge,
+            )
+            datasets[dataset_name] = dataset
+            for record in _score_dataset(dataset, errnet, rafa, device):
+                all_records.append({"dataset": dataset_name, "group": "top_better", **dict(record)})
+        selected = _select_top_better(all_records, int(args.max_images))
+        for record in selected:
+            row = _render_selected_row(
+                dataset_name=str(record["dataset"]),
+                dataset=datasets[str(record["dataset"])],
+                selected_record=record,
+                errnet=errnet,
+                bprap=bprap,
+                rafa=rafa,
+                device=device,
+                labels=labels,
+                row_width=int(args.row_width),
+                rafa_label=str(args.rafa_label),
+                out_dir=out_dir,
+            )
+            overview_rows.append(row)
+            selection_rows.append(dict(record))
+        _stack_rows(overview_rows, out_dir / "contact_sheets" / "top_better.png")
+        _stack_rows(overview_rows, out_dir / "contact_sheets" / "overview.png")
+        _write_selection_csv(out_dir / "selection_summary.csv", selection_rows)
+        print(out_dir)
+        return
+
+    for dataset_name in dataset_names:
         dataset = UnifiedReflectionDataset(
             data_root,
             dataset_name,
@@ -299,46 +406,20 @@ def build_visuals(args: argparse.Namespace) -> None:
 
         group_rows: Dict[str, List[Image.Image]] = {}
         for selected_record in selected:
-            index = int(selected_record["index"])
-            sample = dataset[index]
-            name = str(sample["name"])
-            input_tensor = sample["input"].unsqueeze(0).to(device)
-            target = sample["target"]
-
-            errnet_out = _forward(errnet, input_tensor)["output"][0].clamp(0.0, 1.0)
-            bprap_out = _forward(bprap, input_tensor)["output"][0].clamp(0.0, 1.0)
-            rafa_outputs = _forward(rafa, input_tensor)
-            rafa_out = rafa_outputs["output"][0].clamp(0.0, 1.0)
-            prior = rafa_outputs.get("prior")
-            prior_tensor = prior[0].detach().float().cpu().clamp(0.0, 1.0) if prior is not None else torch.zeros_like(target[:1])
-            target_size = target.shape[-2:]
-            errnet_out = _resize_chw(errnet_out, target_size)
-            bprap_out = _resize_chw(bprap_out, target_size)
-            rafa_out = _resize_chw(rafa_out, target_size)
-            prior_tensor = _resize_chw(prior_tensor, target_size)
-
-            columns = [
-                _tensor_to_rgb(sample["input"]),
-                _tensor_to_rgb(errnet_out),
-                _tensor_to_rgb(bprap_out),
-                _tensor_to_rgb(rafa_out),
-                _tensor_to_rgb(target),
-                _error_map(rafa_out, target),
-                _tensor_to_rgb(prior_tensor),
-            ]
             group_name = str(selected_record.get("group", "even"))
-            delta = selected_record.get("delta_psnr")
-            title = f"{dataset_name}/{name} [{group_name}]"
-            if delta is not None:
-                title += (
-                    f"  PSNR: ERRNet {float(selected_record['errnet_psnr']):.2f}, "
-                    f"{args.rafa_label} {float(selected_record['rafa_psnr']):.2f}, "
-                    f"delta {float(delta):+.2f} dB"
-                )
-            row = _make_row(columns, labels, args.row_width, title=title)
-            row_path = out_dir / "rows" / dataset_name / group_name / f"{name}.png"
-            row_path.parent.mkdir(parents=True, exist_ok=True)
-            row.save(row_path)
+            row = _render_selected_row(
+                dataset_name=dataset_name,
+                dataset=dataset,
+                selected_record=selected_record,
+                errnet=errnet,
+                bprap=bprap,
+                rafa=rafa,
+                device=device,
+                labels=labels,
+                row_width=int(args.row_width),
+                rafa_label=str(args.rafa_label),
+                out_dir=out_dir,
+            )
             dataset_rows.append(row)
             group_rows.setdefault(group_name, []).append(row)
             overview_rows.append(row)
