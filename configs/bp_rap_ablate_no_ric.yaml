@@ -1,0 +1,70 @@
+model:
+  use_prior_head: true
+  use_gated_blocks: true
+  use_refinement: true
+  use_hypercolumn_backbone: true
+  freeze_backbone: true
+  pretrained_errnet_path: checkpoints/errnet/errnet_060_00463920.pt
+  residual_scale: 0.1
+
+data:
+  data_root: ./data
+  crop_size: 224
+  image_size: null
+  num_workers: 0
+  use_extra_train: false
+
+train:
+  epochs: 20
+  batch_size: 24
+  lr: 5.0e-5
+  optimizer: adam
+  seed: 42
+  stages:
+    - name: ablate_no_ric_frozen
+      epochs: 20
+      freeze_backbone: true
+      lr: 5.0e-5
+      backbone_lr: 0.0
+      new_lr: 5.0e-5
+
+loss:
+  lambda_pix: 1.0
+  lambda_perc: 0.0
+  lambda_grad: 0.1
+  lambda_ssim: 0.2
+  lambda_mask: 0.01
+  lambda_mask_pseudo_scale: 0.2
+  lambda_clean: 0.05
+  lambda_anchor: 0.05
+  lambda_delta: 0.01
+  lambda_excl: 0.0
+  lambda_reflection_weight: 2.0
+  lambda_ric: 0.0
+  ric_prob: 0.0
+  ric_prior_weight: 1.0
+  lambda_freq: 0.0
+  lambda_freq_low: 1.0
+  lambda_freq_high: 0.5
+  freq_sigma: 3.0
+  freq_prior_weight: 1.0
+
+synthesis:
+  beta_min: 0.15
+  beta_max: 0.75
+  kappa_min: 0.0
+  kappa_max: 0.25
+  sigma1_min: 1.0
+  sigma1_max: 5.0
+  sigma2_min: 5.0
+  sigma2_max: 15.0
+  alpha2_min: 0.0
+  alpha2_max: 0.35
+  shift_min: -8
+  shift_max: 8
+  noise_std: 0.005
+
+eval:
+  lmse_window: 20
+  lmse_stride: 10
+  data_range: 1.0

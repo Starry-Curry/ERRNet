@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_openrr_pairs", type=int, default=None, help="limit OpenRR training pairs")
     parser.add_argument("--use_extra_train", action="store_true", help="include generic data/extra_train paired data if available")
     parser.add_argument("--max_extra_pairs", type=int, default=None, help="limit generic extra_train pairs")
+    parser.add_argument("--no_zhang_train", action="store_true", help="do not include Zhang real89 training pairs")
     parser.add_argument("--use_course_replay", action="store_true", help="enable course-distribution replay sampling/distillation")
     parser.add_argument("--openrr_ratio", type=float, default=None, help="target OpenRR sampling mass for weighted replay")
     parser.add_argument("--course_replay_ratio", type=float, default=None, help="target VOC/Zhang sampling mass for weighted replay")
@@ -185,11 +186,12 @@ def build_train_dataset(args: argparse.Namespace, cfg: Mapping[str, Any]):
         else:
             missing_reasons.append("VOC synthesis requested but data/VOC2012 is unavailable")
 
-    if available.get("zhang_train", False):
+    use_zhang_train = bool(data_cfg.get("use_zhang_train", True)) and not args.no_zhang_train
+    if use_zhang_train and available.get("zhang_train", False):
         datasets.append(
             UnifiedReflectionDataset(data_root, "zhang_train", crop_size=crop_size, image_size=image_size)
         )
-    else:
+    elif use_zhang_train:
         missing_reasons.append("Zhang train pairs unavailable")
 
     if args.use_openrr:
