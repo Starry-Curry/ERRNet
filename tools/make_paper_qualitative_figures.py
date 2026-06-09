@@ -242,20 +242,61 @@ def main() -> None:
     ]
     q_rows: List[List[np.ndarray]] = []
     q_titles: List[str] = []
+    q_existing_rows: List[List[np.ndarray]] = []
+    q_existing_titles: List[str] = []
+    q_self_rows: List[List[np.ndarray]] = []
+    q_self_titles: List[str] = []
     for dataset_group, mode, label in success_specs:
         records: List[Mapping[str, Any]] = []
         for name in dataset_group.split(","):
             records.extend(scores.get(name, []))
         record = _select(records, mode)
         if record is None:
-            q_rows.append(_placeholder_row(5))
+            row = _placeholder_row(5)
+            q_rows.append(row)
             q_titles.append(label)
+            if dataset_group == "self":
+                q_self_rows.append(row)
+                q_self_titles.append(label)
+            else:
+                q_existing_rows.append(row)
+                q_existing_titles.append(label)
             continue
         selections.append({"figure": "qualitative_main", "slot": label, **dict(record)})
         outputs = _render_outputs(record, datasets, errnet, bprap, rafa, device)
-        q_rows.append([_to_rgb(outputs[key]) for key in ["input", "errnet", "bprap", "rafa", "target"]])
-        q_titles.append(label + "  " + str(outputs["title"]))
+        row = [_to_rgb(outputs[key]) for key in ["input", "errnet", "bprap", "rafa", "target"]]
+        title = label + "  " + str(outputs["title"])
+        q_rows.append(row)
+        q_titles.append(title)
+        if str(record["dataset"]) == "self":
+            q_self_rows.append(row)
+            q_self_titles.append(title)
+        else:
+            q_existing_rows.append(row)
+            q_existing_titles.append(title)
     _save(_draw_grid(q_rows, ["Input", "ERRNet", "BP-RAP RIC", args.rafa_label, "GT"], q_titles, int(args.cell_width)), figures_dir, "qualitative_main")
+    if q_existing_rows:
+        _save(
+            _draw_grid(
+                q_existing_rows,
+                ["Input", "ERRNet", "BP-RAP RIC", args.rafa_label, "GT"],
+                q_existing_titles,
+                int(args.cell_width),
+            ),
+            figures_dir,
+            "qualitative_existing",
+        )
+    if q_self_rows:
+        _save(
+            _draw_grid(
+                q_self_rows,
+                ["Input", "ERRNet", "BP-RAP RIC", args.rafa_label, "GT"],
+                q_self_titles,
+                int(args.cell_width),
+            ),
+            figures_dir,
+            "qualitative_self",
+        )
 
     analysis_records: List[Mapping[str, Any]] = []
     for name, mode in [("sir2_wild", "top"), ("openrr_val", "top"), ("self", "top")]:
