@@ -32,7 +32,30 @@ class SynthesisConfig:
     alpha2_max: float = 0.35
     shift_min: float = -8.0
     shift_max: float = 8.0
+    mask_floor_min: float = 0.0
+    mask_floor_max: float = 0.0
+    mask_gamma_min: float = 1.0
+    mask_gamma_max: float = 1.0
     noise_std: float = 0.005
+    strong_prob: float = 0.0
+    strong_beta_min: float = 0.55
+    strong_beta_max: float = 0.95
+    strong_kappa_min: float = 0.10
+    strong_kappa_max: float = 0.45
+    strong_sigma1_min: float = 0.3
+    strong_sigma1_max: float = 2.5
+    strong_sigma2_min: float = 3.0
+    strong_sigma2_max: float = 12.0
+    strong_sigma_m_min: float = 18.0
+    strong_sigma_m_max: float = 48.0
+    strong_alpha2_min: float = 0.15
+    strong_alpha2_max: float = 0.70
+    strong_shift_min: float = -24.0
+    strong_shift_max: float = 24.0
+    strong_mask_floor_min: float = 0.12
+    strong_mask_floor_max: float = 0.35
+    strong_mask_gamma_min: float = 0.35
+    strong_mask_gamma_max: float = 0.75
 
     @classmethod
     def from_mapping(cls, config: Optional[Mapping[str, Any]]) -> "SynthesisConfig":
@@ -112,7 +135,16 @@ def _normalize_mask(mask: torch.Tensor) -> torch.Tensor:
 
 
 def _uniform(generator: torch.Generator, low: float, high: float) -> float:
+    if float(high) <= float(low):
+        return float(low)
     return float(torch.empty(()).uniform_(float(low), float(high), generator=generator).item())
+
+
+def _range_value(cfg: SynthesisConfig, generator: torch.Generator, name: str, *, strong: bool) -> float:
+    prefix = "strong_" if strong else ""
+    low = getattr(cfg, f"{prefix}{name}_min")
+    high = getattr(cfg, f"{prefix}{name}_max")
+    return _uniform(generator, low, high)
 
 
 def synthesize_reflection_pair(
@@ -146,14 +178,19 @@ def synthesize_reflection_pair(
     if r.shape[-2:] != (h, w):
         r = F.interpolate(r.unsqueeze(0), size=(h, w), mode="bilinear", align_corners=False).squeeze(0)
 
-    beta = _uniform(generator, cfg.beta_min, cfg.beta_max)
-    kappa = _uniform(generator, cfg.kappa_min, cfg.kappa_max)
-    sigma1 = _uniform(generator, cfg.sigma1_min, cfg.sigma1_max)
-    sigma2 = _uniform(generator, cfg.sigma2_min, cfg.sigma2_max)
-    sigma_m = _uniform(generator, cfg.sigma_m_min, cfg.sigma_m_max)
-    alpha2 = _uniform(generator, cfg.alpha2_min, cfg.alpha2_max)
-    dx = _uniform(generator, cfg.shift_min, cfg.shift_max)
-    dy = _uniform(generator, cfg.shift_min, cfg.shift_max)
+    strong = _uniform(generator, 0.0, 1.0) < float(cfg.strong_prob)
+    beta = _range_value(cfg, generator, "beta", strong=strong)
+    kappa = _range_value(cfg, generator, "kappa", strong=strong)
+    sigma1 = _range_value(cfg, generator, "sigma1", strong=strong)
+    sigma2 = _range_value(cfg, generator, "sigma2", strong=strong)
+    sigma_m = _range_value(cfg, generator, "sigma_m", strong=strong)
+    alpha2 = _range_value(cfg, generator, "alpha2", strong=strong)
+    shift_min = cfg.strong_shift_min if strong else cfg.shift_min
+    shift_max = cfg.strong_shift_max if strong else cfg.shift_max
+    dx = _uniform(generator, shift_min, shift_max)
+    dy = _uniform(generator, shift_min, shift_max)
+    mask_floor = _range_value(cfg, generator, "mask_floor", strong=strong)
+    mask_gamma = _range_value(cfg, generator, "mask_gamma", strong=strong)
 
     r_blur_1 = _gaussian_blur(r, sigma1)
     r_blur_2 = _gaussian_blur(r, sigma2)
@@ -162,6 +199,9 @@ def synthesize_reflection_pair(
 
     noise_map = torch.rand((1, h, w), generator=generator, dtype=t.dtype)
     mask = _normalize_mask(_gaussian_blur(noise_map, sigma_m))
+    mask = mask.clamp(0.0, 1.0).pow(max(float(mask_gamma), 1e-3))
+    if mask_floor > 0:
+        mask = (float(mask_floor) + (1.0 - float(mask_floor)) * mask).clamp(0.0, 1.0)
     noise = torch.randn(t.shape, generator=generator, dtype=t.dtype) * float(cfg.noise_std)
 
     blended = ((1.0 - kappa * mask) * t + beta * mask * r_mixed + noise).clamp(0.0, 1.0)
@@ -171,4 +211,5 @@ def synthesize_reflection_pair(
         "target": t.contiguous(),
         "reflection": r_mixed.contiguous(),
         "mask": mask.contiguous(),
+        "hard_synth": torch.tensor([1.0 if strong else 0.0], dtype=t.dtype),
     }

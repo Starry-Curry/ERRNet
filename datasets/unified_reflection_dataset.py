@@ -365,7 +365,9 @@ class UnifiedReflectionDataset(Dataset):
                 "target": target,
                 "reflection": torch.zeros_like(target),
                 "mask": torch.zeros((1, target.shape[1], target.shape[2]), dtype=target.dtype),
+                "hard_synth": torch.zeros(1, dtype=target.dtype),
             }
+        sample.setdefault("hard_synth", torch.zeros(1, dtype=sample["mask"].dtype))
         sample["name"] = t_path.stem
         sample["dataset"] = self.dataset
         sample["mask_reliable"] = torch.ones(1, dtype=sample["mask"].dtype)
@@ -395,6 +397,7 @@ class UnifiedReflectionDataset(Dataset):
             "reflection": (input_tensor - target_tensor).clamp(0.0, 1.0),
             "mask": mask,
             "mask_reliable": mask_reliable,
+            "hard_synth": torch.zeros(1, dtype=input_tensor.dtype),
             "name": input_path.stem,
             "dataset": self.dataset,
         }

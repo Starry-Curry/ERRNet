@@ -1,0 +1,97 @@
+model:
+  use_prior_head: true
+  use_gated_blocks: true
+  use_refinement: true
+  use_hypercolumn_backbone: true
+  freeze_backbone: true
+  pretrained_errnet_path: checkpoints/errnet/errnet_060_00463920.pt
+  residual_scale: 0.1
+
+data:
+  data_root: ./data
+  crop_size: 224
+  image_size: null
+  num_workers: 0
+  use_extra_train: false
+
+train:
+  epochs: 12
+  batch_size: 24
+  lr: 2.0e-5
+  optimizer: adam
+  seed: 42
+  stages:
+    - name: course_hard_synth_frozen
+      epochs: 12
+      freeze_backbone: true
+      lr: 2.0e-5
+      backbone_lr: 0.0
+      new_lr: 2.0e-5
+
+loss:
+  lambda_pix: 1.0
+  lambda_perc: 0.0
+  lambda_grad: 0.1
+  lambda_ssim: 0.2
+  lambda_mask: 0.01
+  lambda_mask_pseudo_scale: 0.2
+  lambda_clean: 0.05
+  lambda_anchor: 0.05
+  lambda_delta: 0.01
+  lambda_excl: 0.0
+  lambda_reflection_weight: 2.0
+  lambda_ric: 0.02
+  ric_prob: 0.3
+  ric_prior_weight: 1.0
+  lambda_hard_anchor: 0.15
+  hard_anchor_prob: 1.0
+  lambda_freq: 0.01
+  lambda_freq_low: 1.0
+  lambda_freq_high: 0.5
+  freq_sigma: 3.0
+  freq_prior_weight: 1.0
+
+synthesis:
+  beta_min: 0.15
+  beta_max: 0.75
+  kappa_min: 0.0
+  kappa_max: 0.25
+  sigma1_min: 1.0
+  sigma1_max: 5.0
+  sigma2_min: 5.0
+  sigma2_max: 15.0
+  sigma_m_min: 8.0
+  sigma_m_max: 24.0
+  alpha2_min: 0.0
+  alpha2_max: 0.35
+  shift_min: -8
+  shift_max: 8
+  mask_floor_min: 0.0
+  mask_floor_max: 0.0
+  mask_gamma_min: 1.0
+  mask_gamma_max: 1.0
+  strong_prob: 0.65
+  strong_beta_min: 0.55
+  strong_beta_max: 0.95
+  strong_kappa_min: 0.10
+  strong_kappa_max: 0.45
+  strong_sigma1_min: 0.3
+  strong_sigma1_max: 2.5
+  strong_sigma2_min: 3.0
+  strong_sigma2_max: 12.0
+  strong_sigma_m_min: 18.0
+  strong_sigma_m_max: 48.0
+  strong_alpha2_min: 0.15
+  strong_alpha2_max: 0.70
+  strong_shift_min: -24
+  strong_shift_max: 24
+  strong_mask_floor_min: 0.12
+  strong_mask_floor_max: 0.35
+  strong_mask_gamma_min: 0.35
+  strong_mask_gamma_max: 0.75
+  noise_std: 0.005
+
+eval:
+  lmse_window: 20
+  lmse_stride: 10
+  data_range: 1.0

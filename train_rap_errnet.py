@@ -58,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher_ckpt", default=None, help="teacher checkpoint for replay-anchored old-model distillation")
     parser.add_argument("--lambda_old", type=float, default=None, help="weight for replay teacher distillation")
     parser.add_argument("--old_loss_prob", type=float, default=None, help="probability of applying teacher distillation per batch")
+    parser.add_argument("--lambda_hard_anchor", type=float, default=None, help="weight for strong synthetic backbone-anchor loss")
+    parser.add_argument("--hard_anchor_prob", type=float, default=None, help="probability of applying strong synthetic backbone-anchor loss per batch")
     parser.add_argument("--backbone_lr", type=float, default=None, help="learning rate for ERRNet backbone parameter group")
     parser.add_argument("--new_lr", type=float, default=None, help="learning rate for RAP prior/gating/refinement parameter group")
     parser.add_argument("--use_ric", action="store_true", help="enable reflection-invariant consistency loss")
@@ -242,7 +244,22 @@ def move_batch_to_device(batch: Mapping[str, Any], device) -> Dict[str, Any]:
     return moved
 
 
-LOSS_KEYS = ["total", "pix", "perc", "grad", "ssim", "mask", "clean", "anchor", "delta", "freq", "ric", "old", "excl"]
+LOSS_KEYS = [
+    "total",
+    "pix",
+    "perc",
+    "grad",
+    "ssim",
+    "mask",
+    "clean",
+    "anchor",
+    "delta",
+    "freq",
+    "ric",
+    "old",
+    "hard_anchor",
+    "excl",
+]
 COURSE_REPLAY_DATASETS = {"voc", "zhang_train"}
 
 
@@ -501,6 +518,7 @@ def append_log(path: Path, row: Mapping[str, Any]) -> None:
                 "freq",
                 "ric",
                 "old",
+                "hard_anchor",
                 "excl",
             ],
         )
@@ -716,6 +734,28 @@ def old_model_distillation_loss(outputs, teacher_outputs, indices) -> Any:
     return torch.mean(torch.abs(student - teacher))
 
 
+def _hard_synth_indices(batch: Mapping[str, Any], device) -> Any:
+    import torch
+
+    flag = batch.get("hard_synth")
+    if not isinstance(flag, torch.Tensor):
+        return None
+    flag = flag.to(device=device).reshape(-1)
+    indices = torch.nonzero(flag > 0.5, as_tuple=False).reshape(-1)
+    return indices if indices.numel() > 0 else None
+
+
+def hard_backbone_anchor_loss(outputs, indices) -> Any:
+    import torch
+    import torch.nn.functional as F
+
+    pred = outputs["output"].index_select(0, indices)
+    anchor = outputs.get("backbone_output", outputs.get("coarse", pred)).detach().index_select(0, indices)
+    if anchor.shape[-2:] != pred.shape[-2:]:
+        anchor = F.interpolate(anchor, size=pred.shape[-2:], mode="bilinear", align_corners=False)
+    return torch.mean(torch.abs(pred - anchor.clamp(0.0, 1.0)))
+
+
 def _format_seconds(seconds: float) -> str:
     seconds = max(0, int(seconds))
     hours, remainder = divmod(seconds, 3600)
@@ -772,6 +812,12 @@ def main() -> None:
     ric_prior_weight = float(loss_cfg.get("ric_prior_weight", 0.0))
     lambda_old = float(args.lambda_old if args.lambda_old is not None else loss_cfg.get("lambda_old", 0.0))
     old_loss_prob = float(args.old_loss_prob if args.old_loss_prob is not None else loss_cfg.get("old_loss_prob", 1.0))
+    lambda_hard_anchor = float(
+        args.lambda_hard_anchor if args.lambda_hard_anchor is not None else loss_cfg.get("lambda_hard_anchor", 0.0)
+    )
+    hard_anchor_prob = float(
+        args.hard_anchor_prob if args.hard_anchor_prob is not None else loss_cfg.get("hard_anchor_prob", 1.0)
+    )
     teacher_ckpt = args.teacher_ckpt or train_cfg.get("teacher_ckpt") or loss_cfg.get("teacher_ckpt")
     if lambda_ric > 0 and not args.use_physics_synthesis:
         warnings.warn(
@@ -781,6 +827,11 @@ def main() -> None:
     if lambda_old > 0 and not teacher_ckpt:
         warnings.warn("lambda_old > 0 but no --teacher_ckpt/train.teacher_ckpt was provided; old distillation is disabled.", RuntimeWarning)
         lambda_old = 0.0
+    if lambda_hard_anchor > 0 and not args.use_physics_synthesis:
+        warnings.warn(
+            "lambda_hard_anchor > 0 but --use_physics_synthesis is off; hard synthetic anchor will not receive strong samples.",
+            RuntimeWarning,
+        )
 
     seed = int(train_cfg.get("seed", 42))
     set_seed(seed)
@@ -883,6 +934,12 @@ def main() -> None:
                     old = old_model_distillation_loss(outputs, teacher_outputs, old_indices)
                     losses["old"] = old
                     losses["total"] = losses["total"] + lambda_old * old
+            if lambda_hard_anchor > 0 and hard_anchor_prob > 0 and random.random() < hard_anchor_prob:
+                hard_indices = _hard_synth_indices(batch, device)
+                if hard_indices is not None:
+                    hard_anchor = hard_backbone_anchor_loss(outputs, hard_indices)
+                    losses["hard_anchor"] = hard_anchor
+                    losses["total"] = losses["total"] + lambda_hard_anchor * hard_anchor
             if optimizer is None:
                 raise RuntimeError("Optimizer was not initialized.")
             optimizer.zero_grad(set_to_none=True)
@@ -940,7 +997,8 @@ def main() -> None:
             f"epoch={epoch} stage={stage['name']} total={avg['total']:.6f} "
             f"pix={avg['pix']:.6f} grad={avg['grad']:.6f} "
             f"anchor={avg['anchor']:.6f} delta={avg['delta']:.6f} "
-            f"freq={avg['freq']:.6f} ric={avg['ric']:.6f} old={avg['old']:.6f}"
+            f"freq={avg['freq']:.6f} ric={avg['ric']:.6f} old={avg['old']:.6f} "
+            f"hard_anchor={avg['hard_anchor']:.6f}"
         )
 
 
