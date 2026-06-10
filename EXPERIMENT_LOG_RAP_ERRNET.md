@@ -1644,3 +1644,105 @@ Input | Baseline | Output | GT | Error Map | Prior Map
 For large full-resolution datasets, run this per dataset or on CEILNet first,
 because loading both the baseline hypercolumn model and RAP-Hyper increases
 evaluation memory usage.
+
+## 16. Final HardSynth And ERRNet-RAFA Fusion Stage
+
+Date: 2026-06-10
+
+This stage was added after the RAFA/OpenRR experiments exposed a clear benchmark
+trade-off:
+
+- RAFA3k w/o old improves SIR2/OpenRR strongly.
+- The same RAFA model still drops sharply on CEILNet and Zhang20.
+- Further training with strong synthetic reflections did not close this gap.
+
+### 16.1 Hard reflection synthesis attempt
+
+Implementation:
+
+- Added `strong_prob` and strong veil/ghost parameters to
+  `datasets/reflection_synthesis.py`.
+- Added `hard_synth` sample flag.
+- Added `lambda_hard_anchor`, applied only on strong synthetic samples, to keep
+  strong synthetic cases closer to the frozen ERRNet backbone output.
+
+Run:
+
+```text
+bp_rap_rafa_openrr3k_no_old_hard_synth_e6
+```
+
+Formal result:
+
+| Method | CEILNet | Zhang20 | SIR2 mean | OpenRR |
+| --- | ---: | ---: | ---: | ---: |
+| RAFA3k w/o old | 24.0420 | 21.0688 | 24.9772 | 28.0698 |
+| HardSynth | 24.0700 | 21.0556 | 24.8881 | 28.1179 |
+
+Reading:
+
+- CEILNet improved by only +0.028 dB.
+- Zhang20 slightly decreased.
+- SIR2 decreased.
+- Strong reflection synthesis is therefore not the final solution; it is useful
+  as a negative result showing that additional training alone did not resolve
+  the CEILNet/Zhang vs real-scene trade-off.
+
+### 16.2 ERRNet-RAFA inference fusion
+
+Motivation:
+
+- ERRNet remains strong on CEILNet/Zhang pixel-aligned benchmarks.
+- RAFA3k w/o old is stronger on SIR2/OpenRR real scenes.
+- A low-cost inference-time fusion can combine the two behaviors.
+
+Definition:
+
+```text
+T_fusion = alpha * T_RAFA + (1 - alpha) * T_ERRNet
+```
+
+The final recommended setting is `alpha=0.50`.
+
+Formal mean results:
+
+| Method | Course PSNR | d vs ERRNet | SIR2 PSNR | d vs ERRNet | OpenRR PSNR | d vs ERRNet | Six-set PSNR |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ERRNet | 24.5077 | 0.0000 | 23.8201 | 0.0000 | 25.4874 | 0.0000 | 24.6709 |
+| Fusion a=0.25 | 24.8235 | +0.3159 | 24.4009 | +0.5808 | 26.3980 | +0.9106 | 25.0859 |
+| Fusion a=0.50 | 24.7864 | +0.2787 | 24.8360 | +1.0159 | 27.2208 | +1.7334 | 25.1921 |
+| Fusion a=0.75 | 24.5022 | -0.0054 | 25.0495 | +1.2294 | 27.8463 | +2.3589 | 25.0596 |
+| RAFA3k w/o old | 24.0085 | -0.4992 | 24.9772 | +1.1571 | 28.0698 | +2.5824 | 24.6853 |
+| Adaptive fusion | 24.6497 | +0.1420 | 25.0170 | +1.1970 | 27.9558 | +2.4684 | 25.2007 |
+
+Per-dataset delta vs ERRNet:
+
+| Method | CEILNet | Zhang20 | Objects | Postcard | Wild | OpenRR |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Fusion a=0.50 | -0.9618 | -0.6923 | +1.1269 | +0.8489 | +1.0720 | +1.7334 |
+| RAFA3k w/o old | -3.5994 | -2.3679 | +1.3820 | +0.8870 | +1.2023 | +2.5824 |
+
+Reading:
+
+- Fusion a=0.50 improves Course, SIR2, OpenRR, and Six-set means over ERRNet.
+- It substantially reduces the CEILNet/Zhang degradation of RAFA3k w/o old.
+- It is the recommended final method for the paper.
+- Adaptive fusion has the highest Six-set mean, but its selector is unreliable
+  for CEILNet/Zhang; it should be reported as analysis, not as the final method.
+
+Generated files:
+
+```text
+results/FUSION_ROUTING_ANALYSIS.md
+results/fusion_qualitative_a0p50/fusion_selection_scores.csv
+results/fusion_qualitative_a0p50/fusion_selected_examples.csv
+paper/figures/fusion_qualitative_main.png
+paper/figures/fusion_failure_cases.png
+```
+
+Paper writing direction:
+
+- Use Fusion a=0.50 as the final robust inference strategy.
+- Use RAFA3k w/o old as the best single extra-data model.
+- Present CEILNet/Zhang remaining failures honestly as strong low-frequency and
+  global-tone cases where ERRNet is still stronger.
