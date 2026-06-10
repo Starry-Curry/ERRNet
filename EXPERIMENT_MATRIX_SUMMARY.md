@@ -1,371 +1,664 @@
-# ERRNet / BP-RAP / RAFA Experiment Matrix Summary
+# ERRNet / BP-RAP / RAFA 项目实验总览
 
-This document is a compact experiment index for deciding what should enter the
-final course paper. The full chronological record is in
-`EXPERIMENT_LOG_RAP_ERRNET.md`; this file reorganizes the same work by method,
-training data, generation or adaptation strategy, evaluation protocol, and
-result status.
+这个文件用于回答一个核心问题：**我们这个反射去除课程项目到底做了什么、为什么这样做、跑了哪些训练和测试、最新结果说明了什么、论文里应该写哪些。**
 
-## 0. Existing Records
+如果只想看最终论文写法，优先读第 1、4、5、6、9 节。  
+如果想追溯完整实验流水账，看 `EXPERIMENT_LOG_RAP_ERRNET.md`。
 
-| File | Role | How to use |
-| --- | --- | --- |
-| `EXPERIMENT_LOG_RAP_ERRNET.md` | Full chronological log | Source of truth for commands, checkpoints, metric tables, and decisions. |
-| `RAP_ERRNET_EXPERIMENT_REPORT.md` | Stage report | Shorter narrative summary before the latest RAFA/balanced/visualization updates. |
-| `BP-RAP-ERRNet_v1.3_design_and_execution_plan.md` | v1.3 design | BP-RAP, RIC, FSS, theory-style justification, planned ablations. |
-| `design_v1.4.md` | v1.4 planning draft | RAFA, reflection-strength balanced sampling, module soup, next-stage strategy. |
-| `BP_RAP_V1_4_RAFA_ITERATION_PLAN.md` | v1.4 execution plan | Server-side command plan for OpenRR/RAFA/soup/visualization experiments. |
-| `paper/neurips_2026.tex` | Current paper draft | Paper-style narrative, not a raw experiment index. |
-| `results/NEXT_STAGE_SWEEP_SUMMARY.md` | Sweep summary | Post-hoc residual/gate/low-frequency sweep and early OpenRR/soup 512 diagnostics. |
+## 1. 当前项目一句话结论
 
-Conclusion: a complete log already exists, but there was no single matrix that
-lists all comparable experiments. This file fills that role.
+我们从课程指定的 **ERRNet-Hyper baseline** 出发，没有重新训练一个大而不稳定的新网络，而是做了两层改进：
 
-## 1. Dataset Inventory
+1. **课程公平改进：BP-RAP RIC**
+   - 不使用 OpenRR 训练数据。
+   - 在 ERRNet 输出基础上加入反射先验、门控适配、残差细化和 RIC 一致性训练。
+   - 结果不是全数据集碾压 ERRNet：CEILNet 和 Zhang20 仍弱于 ERRNet，但在 SIR2 三个真实场景子集上明显优于 ERRNet。
 
-### 1.1 Training Data
+2. **额外真实数据适配：RAFA**
+   - 使用 OpenRR train 作为额外真实配对数据。
+   - 通过课程数据 replay 防止只适配 OpenRR 后损害课程测试集。
+   - 最新结果显示，**RAFA3k w/o old distillation** 是当前 extra-data 最优方法：Course 5-set、SIR2、OpenRR val、Six-set mean 都优于 Balanced RAFA3k。
 
-| Training source | Count / scope | Used by | Notes |
-| --- | ---: | --- | --- |
-| Pascal VOC cropped clean images | 7,643 crops, 224 x 224 | ERRNet course training reference, RAP/BP-RAP course-fair training, RAFA course replay | Used with physics-based synthetic reflection generation. |
-| Zhang real train | 89 paired real images | RAP/BP-RAP course-fair training, OpenRR-FT, RAFA replay | No provided masks in our pipeline; pseudo mask uses `abs(input-target)`. |
-| OpenRR train 1k | 1,000 paired real images | OpenRR-FT, Soup alpha, RAFA1k | Extra-data setting only; not course-fair. |
-| OpenRR train 3k | 3,000 paired real images | RAFA3k, Balanced RAFA3k, Old04 | Extra-data setting only; selected for final external-data adaptation. |
-| Self-collected paired images | Pending, required 5+ | Final course requirement | Not completed in current metrics; must be added before submission. |
+最终论文建议这样定位：
 
-### 1.2 Test Data
-
-| Test set | Count | Protocol name in code/log | Formal evaluation resolution |
-| --- | ---: | --- | --- |
-| CEILNet Table2 synthetic | 100 | `ceilnet` | Native resolution in formal tables; sometimes 512 for diagnostic sweeps. |
-| Zhang real20 | 20 | `zhang20` | `--max_long_edge 512` in final formal protocol. |
-| SIR2 Objects | 200 | `sir2_objects` | Native resolution in formal tables. |
-| SIR2 Postcard | 179 | `sir2_postcard` | Native resolution in formal tables. |
-| SIR2 Wild | 101 | `sir2_wild` | Native resolution in formal tables. |
-| OpenRR val | 300 | `openrr_val` | Native resolution in formal extra-data tables; 512 in quick diagnostics. |
-| Self-collected test set | Pending | `self` / custom layout | Must be evaluated after collection. |
-
-### 1.3 Evaluation Protocols
-
-| Protocol | Datasets | Resize rule | Use in paper |
+| 场景 | 推荐方法 | 是否使用 OpenRR train | 论文定位 |
 | --- | --- | --- | --- |
-| Course 5-set formal | CEILNet, Zhang20, SIR2 Objects/Postcard/Wild | Zhang20 at 512; others native | Main baseline vs method table. |
-| External OpenRR zero-shot | OpenRR val | Native | Important external generalization result. |
-| Six-set formal extra-data | Course 5 sets + OpenRR val | Zhang20 at 512; CEILNet/SIR2/OpenRR native | Main RAFA/OpenRR adaptation table. |
-| Fast 512 diagnostic | Course 5 sets + OpenRR val | All datasets `--max_long_edge 512` | Screening only; do not mix with formal numbers in main table. |
+| 课程公平主结果 | BP-RAP RIC | 否 | 和 ERRNet baseline 公平比较 |
+| 额外真实数据主结果 | RAFA3k w/o old | 是，OpenRR train 3k | 作为 extra-data adaptation 方法 |
+| 旧 final checkpoint | Balanced RAFA3k | 是，OpenRR train 3k | 之前的 metric-best，现在被 w/o old 超过 |
+| 自采数据 | 待补 | 待评估 | 课程硬性要求，明天补 |
 
-Metrics are PSNR, SSIM, NCC, and LMSE. Higher is better for PSNR/SSIM/NCC;
-lower is better for LMSE.
+## 2. 读哪些文件
 
-## 2. Reflection Generation / Adaptation Strategies
+| 文件 | 内容 | 什么时候看 |
+| --- | --- | --- |
+| `EXPERIMENT_LOG_RAP_ERRNET.md` | 完整实验流水账，包含命令、checkpoint、metric 表和决策 | 想查某次实验细节 |
+| `EXPERIMENT_MATRIX_SUMMARY.md` | 当前这个中文总览文件 | 想快速理解项目做了什么 |
+| `FINAL_ABLATION_RUNBOOK.md` | 最终消融和绘图的服务器命令 | 要在阿里云复现实验或生成图 |
+| `RAP_ERRNET_EXPERIMENT_REPORT.md` | 阶段性实验报告 | 早期总结参考 |
+| `BP-RAP-ERRNet_v1.3_design_and_execution_plan.md` | BP-RAP / RIC / FSS 的详细设计 | 写方法部分时参考 |
+| `design_v1.4.md` | RAFA、balanced sampling、soup 的规划 | 写 extra-data 适配时参考 |
+| `BP_RAP_V1_4_RAFA_ITERATION_PLAN.md` | RAFA 执行方案 | 查 OpenRR 训练流程 |
+| `results/FINAL_TABLES_FOR_PAPER.md` | 最新生成的论文表格草稿 | 写论文表格时直接用 |
 
-### 2.1 Physics Synthesis Used During Training
+## 3. 数据集和正式评估协议
 
-All RAP/BP-RAP/RAFA runs using course synthesis share the same synthetic
-reflection parameter family:
+### 3.1 训练数据
 
-| Parameter | Value range |
+| 训练数据 | 数量 | 用途 | 是否课程公平 |
+| --- | ---: | --- | --- |
+| Pascal VOC cropped clean images | 7,643 张 224 x 224 crop | 用物理合成反射图训练 | 是 |
+| Zhang real train | 89 对真实训练图像 | 课程真实训练数据 / replay | 是 |
+| OpenRR train 1k | 1,000 对真实配对图像 | OpenRR-FT、Soup、RAFA1k | 否 |
+| OpenRR train 3k | 3,000 对真实配对图像 | RAFA3k、Balanced、w/o old、OpenRR-only | 否 |
+| 自采 paired data | 至少 5 对，未完成 | 课程要求的自采测试 | 待补 |
+
+注意：OpenRR train 是额外数据，不能和课程公平主结果混在一起。论文中要明确分成：
+
+- course-fair setting
+- extra-data / OpenRR adaptation setting
+
+### 3.2 测试数据和正式协议
+
+| 测试集 | 数量 | 正式协议 | 备注 |
+| --- | ---: | --- | --- |
+| CEILNet Table2 | 100 | native resolution | 合成测试集，ERRNet 很强 |
+| Zhang real20 | 20 | `--max_long_edge 512` | 课程真实测试集 |
+| SIR2 Objects | 200 | native resolution | 真实场景 |
+| SIR2 Postcard | 179 | native resolution | 真实场景 |
+| SIR2 Wild | 101 | native resolution | 真实场景 |
+| OpenRR val | 300 | native resolution | 外部真实 benchmark |
+| Self-collected | 待补 | 建议 native，若 OOM 需说明 resize | 课程硬性要求 |
+
+正式指标：
+
+| 指标 | 越大/越小越好 | 含义 |
+| --- | --- | --- |
+| PSNR | 越大越好 | 像素误差，越高越接近 GT |
+| SSIM | 越大越好 | 结构相似度 |
+| NCC | 越大越好 | 归一化相关性 |
+| LMSE | 越小越好 | 局部 MSE，更关注局部保真 |
+
+重要提醒：之前有一些 all-512 diagnostic 结果，那些只用于快速筛选，不放进主论文表格。
+
+## 4. 我们的方法到底是什么
+
+### 4.1 Baseline：ERRNet-Hyper
+
+课程指定 baseline 是 ERRNet。我们实际评估的强 baseline 是 **ERRNet-Hyper**：
+
+- 输入不是普通 RGB 3 通道，而是 RGB + VGG hypercolumn 特征。
+- 这也是课程 checkpoint `checkpoints/errnet/errnet_060_00463920.pt` 的结构。
+- 在 CEILNet 和 Zhang20 上非常强，是我们很难超过的主要原因。
+
+论文里 baseline 可以写成：
+
+> We reproduce the course ERRNet-Hyper baseline and use it as the strong reference model.
+
+### 4.2 早期尝试：RAP from scratch
+
+我们最开始尝试从零训练一个 RAP-ERRNet：
+
+- 使用 VOC 物理合成 + Zhang real89。
+- 模型包含 prior、gate、refinement。
+- 但 backbone 是 3-channel from-scratch。
+
+结果：
+
+| 方法 | CEILNet | Zhang20 | SIR2 Objects | SIR2 Postcard | SIR2 Wild |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RAP from scratch | 19.1752 | 19.5196 | 25.7196 | 20.8931 | 25.5726 |
+
+结论：
+
+- SIR2 Objects/Wild 有一些提升潜力。
+- CEILNet 和 Zhang20 远低于 ERRNet。
+- 说明从零训练不适合作为主方法，必须以 ERRNet-Hyper 为强初始解。
+
+### 4.3 RAP-Hyper：引入 ERRNet-Hyper 预训练
+
+RAP-Hyper 是中间版本：
+
+- 使用 ERRNet-Hyper checkpoint 初始化 backbone。
+- 保留 prior、gate、refinement。
+- 训练数据仍是 VOC 合成 + Zhang real89。
+
+它不是最终方法，但很关键，因为后面的 BP-RAP / RAFA 都沿用了这个强初始化路线。
+
+RAP-Hyper 的作用：
+
+- 证明“反射先验 + 残差细化”在真实 SIR2 场景有效。
+- 同时暴露问题：直接 fine-tune 会损害 CEILNet/Zhang 的像素保真。
+
+### 4.4 BP-RAP：Baseline-preserving Reflection-Aware Prior refinement
+
+BP-RAP 的核心思想是：
+
+> 不重新生成整张图，而是在 ERRNet 输出的基础上做受控的小残差修正。
+
+流程：
+
+```text
+Input I
+  -> ERRNet-Hyper 得到初始透射层 T0
+  -> Prior Head 预测反射先验 P
+  -> Prior-gated Adapter 得到 Tg
+  -> Residual Refinement 预测 Delta
+  -> 输出 T = Tg + Delta
+```
+
+关键设计：
+
+| 模块 | 作用 |
 | --- | --- |
-| Reflection intensity `beta` | 0.15 to 0.75 |
-| Blur/nonlinearity `kappa` | 0.0 to 0.25 |
-| First blur sigma | 1.0 to 5.0 |
-| Second blur sigma | 5.0 to 15.0 |
-| Second component alpha | 0.0 to 0.35 |
-| Spatial shift | -8 to 8 pixels |
-| Noise std | 0.005 |
+| Prior Head | 预测哪里可能有反射 |
+| Prior-gated Adapter | 用 prior 控制特征修正位置 |
+| Residual Refinement | 只学小残差，不重写整图 |
+| residual scale 0.1 | 限制残差幅度 |
+| anchor loss | 低反射区域尽量贴近 ERRNet |
+| delta regularization | 防止过度修改 |
+| pseudo mask | 无 mask 数据用 `abs(input-target)` 近似反射区域 |
 
-This is the core generated training data strategy for VOC clean images. Zhang
-real and OpenRR real pairs do not use synthetic reflection generation.
+### 4.5 RIC：Reflection-Invariant Consistency
 
-### 2.2 Inference / Checkpoint Combination Strategies
+RIC 是课程公平方法 BP-RAP RIC 的训练约束：
 
-| Strategy | Training required | Purpose | Result status |
-| --- | --- | --- | --- |
-| Raw model forward | No extra inference trick | Main inference for ERRNet, BP-RAP, RAFA | Used for all formal results. |
-| Post-hoc residual scaling | No | Scale BP-RAP residual by 0.25/0.5/0.75/1.0 | Diagnostic; full residual was best. |
-| Prior-gated residual | No | Gate residual with prior, gamma 1.0/1.5/2.0 | Diagnostic; worse than full residual. |
-| Low-frequency anchoring | No | Anchor low-frequency component after inference | Diagnostic; worse than full residual. |
-| Checkpoint soup | No new training | Average base BP-RAP RIC and OpenRR-FT weights | Useful fallback; alpha=0.25 formally evaluated. |
-| Module-only soup | No new full training | Soup only selected modules around RAFA | Diagnostic; did not beat raw RAFA. |
-| RAFA replay adaptation | Yes | Real-data fine-tuning with course replay and teacher distillation | Best extra-data algorithm. |
-| Reflection-strength balanced replay | Yes | Balance OpenRR replay across weak/strong and veil/ghost bins | Metric-best final checkpoint by six-set mean, but gain is marginal. |
+- 对同一 clean image 合成两种不同反射观测。
+- 要求模型输出的透射层保持一致。
 
-### 2.3 Qualitative Visualization Generation
+动机：
 
-| Visualization strategy | Output | Purpose |
-| --- | --- | --- |
-| Even/random dataset contact sheets | `results/final_visuals_balanced` | Early broad visual scan. |
-| Per-dataset better/similar/worse groups | `results/final_visuals_by_dataset` | Diagnose where RAFA beats/ties/loses to ERRNet per dataset. |
-| Global top-better examples | `results/final_visuals_top_better/contact_sheets/top_better.png` | Paper main qualitative figure: 5-6 examples where final model improves over ERRNet. |
-| Result summary plot | `paper/figures/result_summary.png` | Paper quantitative trend figure. |
+> 如果两个输入只是反射不同，透射层应该相同。模型应学习对反射扰动不敏感。
 
-## 3. Method Matrix
+实际结果显示，RIC 的数值提升不算强，但作为方法叙事是合理的。最新结构消融里 `w/o RIC` 和 full 非常接近，因此论文里不要过度吹 RIC，只说它是稳定训练和反射不变性的约束。
 
-| ID | Method / run | Course-fair? | Training data | Config / key flags | Checkpoint / result location | Main result status |
-| --- | --- | --- | --- | --- | --- | --- |
-| M0 | ERRNet-Hyper baseline | Yes | Course checkpoint, no new training in this project | `eval_all.py --model errnet --errnet_hyper` | `checkpoints/errnet/errnet_060_00463920.pt` | Strong baseline; best on CEILNet/Zhang. |
-| M1 | RAP from scratch | Yes | VOC physics synthesis + Zhang real89 | `configs/rap_errnet.yaml`; 3-channel backbone; batch 8; 100 epochs | `checkpoints/rap_errnet_main/best.pt` | Diagnostic only; SIR2 improves, CEILNet/Zhang much worse. |
-| M2 | RAP-Hyper | Yes | VOC physics synthesis + Zhang real89 | `configs/rap_errnet_hyper_pretrained.yaml`; ERRNet hypercolumn init; residual/prior/gate/refine | `checkpoints/rap_errnet_hyper_pretrained_ppu_bs32/best.pt` | Strong SIR2 result; still below baseline on CEILNet/Zhang. |
-| M3 | RAP-Staged / ZeroRes | Yes | VOC physics synthesis + Zhang real89 | `configs/rap_errnet_hyper_zerores_staged.yaml`; 20-epoch frozen warmup + 80-epoch conservative finetune; anchor/delta regularization | `checkpoints/rap_errnet_hyper_zerores_staged_ppu_bs32/best.pt` | Conservative ablation; improves stability but reduces SIR2 gains. |
-| M4 | BP-RAP RIC | Yes | VOC physics synthesis + Zhang real89 | `configs/bp_rap_hyper_zerores_staged_ric.yaml`; `lambda_ric=0.03`; RIC prob 0.5; residual scale 0.1 | `checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt` | Course-fair main method. |
-| M5 | BP-RAP RIC + FSS | Yes | VOC physics synthesis + Zhang real89 | `configs/bp_rap_hyper_zerores_staged_ric_freq.yaml`; `lambda_freq=0.03` | `checkpoints/bp_rap_hyper_ric_freq_ft_from_ric_ppu_bs24/best.pt` | Stable but not consistently better than RIC; ablation only. |
-| M6 | BP-RAP post-hoc calibration sweep | Yes | No training; uses M4 checkpoint | Residual scale 0.25/0.5/0.75/1.0; prior gate gamma 1.0/1.5/2.0; low-frequency anchors 0.25/0.5/0.75 | `results/NEXT_STAGE_SWEEP_SUMMARY.md` | Diagnostic only; raw residual/full scale wins. |
-| M7 | OpenRR zero-shot comparison | Yes for model training; external test only | No OpenRR train data | Compare M0 and M4 directly on OpenRR val | `results/openrr_zero_errnet`, `results/openrr_zero_bp_rap_ric` | Strong external validation: M4 beats ERRNet by +1.37 dB. |
-| M8 | BP-RAP RIC + OpenRR-FT 1k | No | Zhang real89 + OpenRR train 1k | M4 init; `--use_openrr --max_openrr_pairs 1000`; 10 epochs; frozen backbone; no physics synthesis, so RIC skipped | `checkpoints/bp_rap_ric_openrr1k_realonly_freeze_e10/best.pt` | 512 diagnostic only; high OpenRR gain but source-domain drift. |
-| M9 | OpenRR checkpoint soup | No | No new training; mixes M4 and M8 | `tools/soup_checkpoints.py`; alpha=0.25/0.50/0.75; selected alpha=0.25 formal | `checkpoints/bp_rap_ric_openrr1k_soup_a0p25/best.pt` | Good fallback; superseded by RAFA. |
-| M10 | RAFA-OpenRR1k | No | OpenRR train 1k + VOC physics synthesis + Zhang real89 | `configs/bp_rap_rafa_openrr1k.yaml`; OpenRR/course 0.5/0.5; samples/epoch 1200; teacher=M4; `lambda_old=0.2`; frozen 10 epochs | `checkpoints/bp_rap_rafa_openrr1k_e10/best.pt` | First principled extra-data adaptation; better than soup. |
-| M11 | Module-only soup after RAFA1k | No | No new training | Soup selected modules around RAFA; alpha=0.25/0.50/0.75 | Diagnostic table in log | Not selected; raw RAFA remains better. |
-| M12 | RAFA-OpenRR3k | No | OpenRR train 3k + VOC physics synthesis + Zhang real89 | RAFA config with CLI overrides: max OpenRR pairs 3000, samples/epoch 1600; teacher=M4; `lambda_old=0.2`; frozen 10 epochs | `checkpoints/bp_rap_rafa_openrr3k_e10/best.pt` | Main extra-data adaptation algorithm. |
-| M13 | Strength-balanced RAFA-OpenRR3k | No | OpenRR train 3k + VOC physics synthesis + Zhang real89 | `configs/bp_rap_rafa_openrr3k_balanced.yaml`; OpenRR/course 0.5/0.5; bin-balanced OpenRR replay; `lambda_old=0.2` | `checkpoints/bp_rap_rafa_openrr3k_balanced_e10/best.pt` | Final metric-best checkpoint by six-set mean. |
-| M14 | RAFA-OpenRR3k Old04 | No | OpenRR train 3k + VOC physics synthesis + Zhang real89 | `configs/bp_rap_rafa_openrr3k_old04.yaml`; same as RAFA3k but `lambda_old=0.4` | `checkpoints/bp_rap_rafa_openrr3k_old04_e10/best.pt` | Negative diagnostic; stronger old distillation hurts. |
+### 4.6 FSS：Frequency-Selective Supervision
 
-## 4. Formal Course 5-Set Results
+FSS 是频率监督探索：
 
-This is the cleanest course-fair table. It excludes OpenRR train and should be
-the main baseline comparison in the paper.
+- 目标是区分低频 veil reflection 和高频 ghost reflection。
+- 配置为 `lambda_freq=0.03`。
 
-| Method | 5-set PSNR | 5-set SSIM | 5-set NCC | 5-set LMSE | SIR2 PSNR | SIR2 SSIM | SIR2 NCC | SIR2 LMSE | Paper role |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| ERRNet baseline | 24.5077 | 0.8861 | 0.9465 | 0.0081 | 23.8201 | 0.8871 | 0.9546 | 0.0052 | Required baseline. |
-| RAP-Hyper | 23.8530 | 0.8835 | 0.9418 | 0.0086 | 24.7547 | 0.9087 | 0.9650 | 0.0034 | Method development result. |
-| RAP-Staged | 23.5908 | 0.8811 | 0.9432 | 0.0083 | 24.0451 | 0.8989 | 0.9589 | 0.0039 | Conservative ablation. |
-| BP-RAP RIC | 23.8919 | 0.8839 | 0.9419 | 0.0086 | 24.8216 | 0.9088 | 0.9653 | 0.0034 | Course-fair main method. |
-| BP-RAP RIC+FSS | 23.8820 | 0.8838 | 0.9420 | 0.0086 | 24.8254 | 0.9087 | 0.9654 | 0.0034 | Stable ablation, not main. |
+结果：
 
-Key reading:
+- 和 BP-RAP RIC 基本持平。
+- 没有成为主方法。
+- 可以作为“探索过但收益有限”的 ablation。
 
-- ERRNet remains stronger on CEILNet and Zhang real20.
-- BP-RAP RIC improves SIR2 PSNR over ERRNet by:
-  - Objects: +1.1922 dB
-  - Postcard: +0.5623 dB
-  - Wild: +1.2501 dB
-- The honest claim is not "universally better than ERRNet"; it is "better on
-  real-scene SIR2/OpenRR style cases, weaker on some aligned benchmarks."
+### 4.7 RAFA：Replay-Anchored Fine-tuning for Real Reflection Adaptation
 
-## 5. Per-Dataset Formal Course Results
+RAFA 是我们后期最重要的 extra-data 方法。
 
-| Method | Dataset | PSNR | SSIM | NCC | LMSE |
-| --- | --- | ---: | ---: | ---: | ---: |
-| ERRNet baseline | CEILNet Table2 | 27.6414 | 0.9407 | 0.9808 | 0.0047 |
-| ERRNet baseline | Zhang real20, 512 | 23.4367 | 0.8285 | 0.8877 | 0.0203 |
-| ERRNet baseline | SIR2 Objects | 24.6983 | 0.8980 | 0.9817 | 0.0029 |
-| ERRNet baseline | SIR2 Postcard | 21.8856 | 0.8773 | 0.9463 | 0.0044 |
-| ERRNet baseline | SIR2 Wild | 24.8763 | 0.8861 | 0.9359 | 0.0083 |
-| RAP-Hyper | CEILNet Table2 | 23.9566 | 0.9076 | 0.9536 | 0.0071 |
-| RAP-Hyper | Zhang real20, 512 | 21.0440 | 0.7840 | 0.8604 | 0.0258 |
-| RAP-Hyper | SIR2 Objects | 25.8587 | 0.9118 | 0.9857 | 0.0026 |
-| RAP-Hyper | SIR2 Postcard | 22.4229 | 0.8950 | 0.9514 | 0.0036 |
-| RAP-Hyper | SIR2 Wild | 25.9825 | 0.9192 | 0.9579 | 0.0040 |
-| RAP-Staged | CEILNet Table2 | 23.8376 | 0.9116 | 0.9648 | 0.0070 |
-| RAP-Staged | Zhang real20, 512 | 21.9808 | 0.7971 | 0.8743 | 0.0229 |
-| RAP-Staged | SIR2 Objects | 25.4906 | 0.9076 | 0.9862 | 0.0025 |
-| RAP-Staged | SIR2 Postcard | 21.6596 | 0.8836 | 0.9482 | 0.0041 |
-| RAP-Staged | SIR2 Wild | 24.9851 | 0.9055 | 0.9424 | 0.0051 |
-| BP-RAP RIC | CEILNet Table2 | 23.9710 | 0.9076 | 0.9533 | 0.0072 |
-| BP-RAP RIC | Zhang real20, 512 | 21.0237 | 0.7854 | 0.8603 | 0.0256 |
-| BP-RAP RIC | SIR2 Objects | 25.8905 | 0.9121 | 0.9858 | 0.0026 |
-| BP-RAP RIC | SIR2 Postcard | 22.4479 | 0.8950 | 0.9525 | 0.0036 |
-| BP-RAP RIC | SIR2 Wild | 26.1264 | 0.9192 | 0.9576 | 0.0041 |
-| BP-RAP RIC+FSS | CEILNet Table2 | 23.9003 | 0.9073 | 0.9532 | 0.0072 |
-| BP-RAP RIC+FSS | Zhang real20, 512 | 21.0333 | 0.7857 | 0.8606 | 0.0255 |
-| BP-RAP RIC+FSS | SIR2 Objects | 25.9041 | 0.9119 | 0.9858 | 0.0026 |
-| BP-RAP RIC+FSS | SIR2 Postcard | 22.4792 | 0.8955 | 0.9527 | 0.0035 |
-| BP-RAP RIC+FSS | SIR2 Wild | 26.0929 | 0.9187 | 0.9576 | 0.0041 |
+问题背景：
 
-## 6. Early Diagnostic Results
+- OpenRR train 是额外真实配对数据。
+- 直接用 OpenRR fine-tune 会显著提升 OpenRR val，但可能让课程数据集变差。
 
-### 6.1 From-Scratch RAP
+RAFA 的做法：
 
-| Run | Config | Training | Result | Decision |
-| --- | --- | --- | --- | --- |
-| RAP mid epoch ~50 | `configs/rap_errnet.yaml` | VOC physics + Zhang real89 | CEILNet/Zhang much worse than ERRNet; SIR2 Objects and Wild improved. | Diagnostic only. |
-| RAP final epoch 100 | `configs/rap_errnet.yaml` | VOC physics + Zhang real89 | Average PSNR 22.9575; SIR2 Objects/Wild improve, CEILNet remains about 8.7 dB below baseline. | Do not use as main method. |
+| 设计 | 作用 |
+| --- | --- |
+| OpenRR supervision | 利用真实配对数据提升真实反射场景 |
+| Course replay | 每个 epoch 混入 VOC synthesis + Zhang real89，防止忘记课程分布 |
+| Teacher distillation | 让 student 在 replay 样本上接近原 BP-RAP RIC teacher |
+| Frozen backbone | 只微调新模块，降低破坏 ERRNet backbone 的风险 |
 
-This experiment is useful in the paper only as a short ablation showing why
-pretrained ERRNet anchoring is necessary.
+最新结果很重要：`lambda_old=0.2` 的旧蒸馏并不是最优，**RAFA3k w/o old** 反而最好。这说明：
 
-### 6.2 Hyper-Pretrained Mid Evaluation
+- course replay 是必要的；
+- old distillation 可能过度限制模型适配 OpenRR；
+- 论文里可以把 RAFA 的关键说成 “OpenRR supervision + course replay”，而不是把 old distillation 说成必不可少。
 
-There is also a RAP-Hyper mid checkpoint:
+### 4.8 Reflection-strength balanced sampling
 
-| Method | PSNR | SSIM | NCC | LMSE | Status |
-| --- | ---: | ---: | ---: | ---: | --- |
-| RAP-Hyper mid | 24.6116 | 0.9066 | 0.9644 | 0.0044 | Auxiliary/diagnostic; not part of final formal table. |
+Balanced RAFA3k 做了一个采样优化：
 
-Use only if the paper needs a training-progress figure; otherwise omit.
+- 先分析 OpenRR train 的反射强度和高频比例。
+- 把样本分成 weak/strong 与 veil/ghost 四类。
+- 在 OpenRR 采样内部做均衡。
 
-## 7. OpenRR External / Extra-Data Results
+它曾经是 metric-best checkpoint，但最新被 RAFA3k w/o old 超过。
 
-### 7.1 OpenRR Zero-Shot
+现在论文建议：
 
-No OpenRR train data is used here. This is an external generalization test.
+- 可以把 balanced sampling 写成一个尝试过的 refinement。
+- 不要把它作为最终最强算法。
 
-| Method | OpenRR val PSNR | SSIM | NCC | LMSE | Reading |
-| --- | ---: | ---: | ---: | ---: | --- |
-| ERRNet baseline | 25.4874 | 0.9480 | 0.9641 | 0.0030 | Baseline external reference. |
-| BP-RAP RIC | 26.8597 | 0.9600 | 0.9693 | 0.0018 | +1.3723 dB over ERRNet; important paper result. |
+## 5. 最新课程公平结果
 
-### 7.2 Fast 512 Post-Hoc Sweep
+课程公平结果只比较没有使用 OpenRR train 的方法。
 
-All six datasets are resized to max long edge 512. This is a screening
-protocol, not the final formal table.
+| Method | Uses OpenRR train? | Course 5-set PSNR | SSIM | NCC | LMSE | SIR2 PSNR | SIR2 SSIM | SIR2 NCC | SIR2 LMSE |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ERRNet baseline | N | 24.5077 | 0.8861 | 0.9465 | 0.0081 | 23.8201 | 0.8871 | 0.9546 | 0.0052 |
+| BP-RAP RIC | N | 23.8919 | 0.8839 | 0.9419 | 0.0086 | 24.8216 | 0.9088 | 0.9653 | 0.0034 |
+| RIC+FSS | N | 23.8820 | 0.8838 | 0.9420 | 0.0086 | 24.8254 | 0.9087 | 0.9654 | 0.0034 |
 
-| Method | Count | PSNR | SSIM | NCC | LMSE | Reading |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| residual_0.25 | 6 | 23.6692 | 0.8675 | 0.9416 | 0.0094 | Too weak. |
-| residual_0.5 | 6 | 23.8718 | 0.8812 | 0.9431 | 0.0088 | Better but below full residual. |
-| residual_0.75 | 6 | 24.0310 | 0.8903 | 0.9441 | 0.0083 | Close. |
-| residual_1.0 | 6 | 24.1389 | 0.8944 | 0.9447 | 0.0080 | Best; keep raw BP-RAP. |
-| gate_1.0 | 6 | 23.9072 | 0.8834 | 0.9433 | 0.0087 | Worse. |
-| gate_1.5 | 6 | 23.8031 | 0.8768 | 0.9426 | 0.0090 | Worse. |
-| gate_2.0 | 6 | 23.7179 | 0.8710 | 0.9420 | 0.0093 | Worse. |
-| lowfreq_0.25 | 6 | 23.7485 | 0.8821 | 0.9427 | 0.0087 | Worse. |
-| lowfreq_0.5 | 6 | 23.8054 | 0.8826 | 0.9429 | 0.0087 | Worse. |
-| lowfreq_0.75 | 6 | 23.8579 | 0.8830 | 0.9431 | 0.0087 | Worse. |
+解读：
 
-Paper use: one sentence in ablation/negative results is enough. Do not make this
-a main table.
+1. ERRNet 的 Course 5-set mean 仍最高。
+2. BP-RAP RIC 的优势集中在 SIR2 三个真实场景子集。
+3. BP-RAP RIC 相对 ERRNet 的 SIR2 PSNR 提升：
 
-### 7.3 OpenRR-FT and Soup
-
-| Method | Training / construction | Evaluation type | Six-set PSNR | SSIM | NCC | LMSE | OpenRR val PSNR | Status |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| OpenRR-FT 1k | M4 init; Zhang real89 + OpenRR train 1k; frozen 10 epochs; RIC skipped | 512 diagnostic | 24.4858 | 0.8865 | 0.9444 | 0.0082 | 29.4965 | Strong target gain but drift; not final. |
-| Soup alpha=0.25 | `0.75 * BP-RAP RIC + 0.25 * OpenRR-FT` | 512 diagnostic | 24.3010 | 0.8950 | 0.9449 | 0.0079 | 27.8549 | Stable fallback. |
-| Soup alpha=0.50 | Average weighted toward OpenRR-FT | 512 diagnostic | 24.4533 | 0.8946 | 0.9450 | 0.0079 | 28.5462 | Higher mean but more OpenRR-biased. |
-| Soup alpha=0.75 | More OpenRR-FT weight | 512 diagnostic | 24.5303 | 0.8919 | 0.9449 | 0.0080 | 29.1822 | Close to OpenRR-FT behavior. |
-
-Soup alpha=0.25 was also formally evaluated:
-
-| Dataset | PSNR | SSIM | NCC | LMSE |
-| --- | ---: | ---: | ---: | ---: |
-| CEILNet Table2 | 23.9450 | 0.9064 | 0.9531 | 0.0071 |
-| Zhang real20, 512 | 21.0559 | 0.7857 | 0.8601 | 0.0256 |
-| SIR2 Objects | 26.0059 | 0.9129 | 0.9861 | 0.0026 |
-| SIR2 Postcard | 22.6883 | 0.8961 | 0.9531 | 0.0036 |
-| SIR2 Wild | 26.0795 | 0.9199 | 0.9578 | 0.0040 |
-| OpenRR val | 27.4103 | 0.9614 | 0.9704 | 0.0017 |
-| Six-set mean | 24.5308 | 0.8971 | 0.9468 | 0.0074 |
-
-Paper use: optional ablation/fallback. RAFA is a cleaner algorithmic story.
-
-## 8. RAFA and Balanced RAFA Results
-
-### 8.1 RAFA Formal Results
-
-| Method | Training data | Config / key difference | Six-set PSNR | SSIM | NCC | LMSE | OpenRR val PSNR | Status |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| RAFA1k | OpenRR train 1k + VOC physics + Zhang real89 | `configs/bp_rap_rafa_openrr1k.yaml`; OpenRR/course 0.5/0.5; `lambda_old=0.2` | 24.5779 | 0.8967 | 0.9468 | 0.0074 | 27.7031 | Better than soup; useful progression. |
-| RAFA3k | OpenRR train 3k + VOC physics + Zhang real89 | RAFA1k config with 3k/samples=1600 overrides | 24.6336 | 0.8968 | 0.9468 | 0.0074 | 27.8483 | Main extra-data algorithm. |
-| Balanced RAFA3k | Same as RAFA3k | `configs/bp_rap_rafa_openrr3k_balanced.yaml`; OpenRR bin-balanced replay | 24.6390 | 0.8968 | 0.9467 | 0.0074 | 27.8349 | Metric-best final checkpoint by mean. |
-
-### 8.2 Per-Dataset RAFA3k vs Balanced RAFA3k
-
-| Dataset | RAFA3k PSNR | RAFA3k SSIM | RAFA3k NCC | RAFA3k LMSE | Balanced PSNR | Balanced SSIM | Balanced NCC | Balanced LMSE |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| CEILNet Table2 | 24.0504 | 0.9076 | 0.9534 | 0.0072 | 24.0417 | 0.9073 | 0.9533 | 0.0072 |
-| Zhang real20, 512 | 21.0620 | 0.7821 | 0.8594 | 0.0256 | 21.0535 | 0.7827 | 0.8591 | 0.0256 |
-| SIR2 Objects | 26.0450 | 0.9141 | 0.9863 | 0.0025 | 26.0617 | 0.9141 | 0.9863 | 0.0025 |
-| SIR2 Postcard | 22.6764 | 0.8948 | 0.9532 | 0.0036 | 22.6947 | 0.8945 | 0.9531 | 0.0036 |
-| SIR2 Wild | 26.1194 | 0.9203 | 0.9578 | 0.0040 | 26.1477 | 0.9205 | 0.9578 | 0.0040 |
-| OpenRR val | 27.8483 | 0.9618 | 0.9708 | 0.0016 | 27.8349 | 0.9618 | 0.9707 | 0.0016 |
-| Six-set mean | 24.6336 | 0.8968 | 0.9468 | 0.0074 | 24.6390 | 0.8968 | 0.9467 | 0.0074 |
-
-Balanced RAFA improves the formal mean by only +0.0054 dB over uniform RAFA3k.
-It is fair to select it as metric-best, but the paper should frame it as a
-sampling refinement, not the main conceptual contribution.
-
-### 8.3 Reflection-Strength Bins
-
-The OpenRR3k strength analysis produced:
-
-| Bin | Count |
+| SIR2 子集 | BP-RAP RIC 相对 ERRNet PSNR 提升 |
 | --- | ---: |
-| strong_ghost | 377 |
-| strong_veil | 1123 |
-| weak_ghost | 1123 |
-| weak_veil | 377 |
+| Objects | +1.1922 dB |
+| Postcard | +0.5623 dB |
+| Wild | +1.2501 dB |
 
-Earlier OpenRR1k analysis produced the same qualitative imbalance:
+论文应该诚实写：
 
-| Dataset | strong_ghost | strong_veil | weak_ghost | weak_veil |
+> BP-RAP RIC does not dominate ERRNet on all benchmarks. It trades some pixel-aligned fidelity on CEILNet/Zhang for better real-scene SIR2 performance.
+
+中文意思：
+
+> 我们的方法不是所有数据集都比 ERRNet 强，而是在真实场景数据集上更有优势。
+
+## 6. 最新结构消融结果
+
+结构消融以 BP-RAP RIC 为 full model，所有结果都是 formal evaluation，不是 all-512 diagnostic。
+
+| Method | Prior | Gate | Refine | RIC | FSS | Course 5-set PSNR | SIR2 PSNR | OpenRR val PSNR | Main reading |
+| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
+| BP-RAP RIC | Y | Y | Y | Y | N | 23.8919 | 24.8216 | 26.8597 | full course-fair model |
+| w/o prior | N | Y | Y | Y | N | 23.9071 | 24.8273 | 26.8180 | prior 数值收益不明显 |
+| w/o gate | Y | N | Y | Y | N | 23.8790 | 24.8126 | 26.7596 | gate 对 OpenRR 有一定帮助 |
+| w/o refinement | Y | Y | N | Y | N | 23.5954 | 24.5825 | 26.3458 | refinement 是最关键模块 |
+| w/o RIC | Y | Y | Y | N | N | 23.8964 | 24.8301 | 26.8846 | RIC 数值不强，基本持平 |
+| RIC+FSS | Y | Y | Y | Y | Y | 23.8820 | 24.8254 | 26.8909 | FSS 基本持平 |
+
+这个表的核心结论：
+
+1. **Residual refinement 最重要**  
+   去掉 refinement 后，Course 5-set、SIR2、OpenRR 都明显下降。
+
+2. **prior/gate/RIC/FSS 的单独数值收益不强**  
+   这说明论文里不能把每个模块都吹成大幅提升。更合理的写法是：
+   - prior/gate 提供空间反射适配机制；
+   - RIC/FSS 是训练约束探索；
+   - 真正稳定提升主要来自 baseline-preserving residual refinement 和后续 RAFA replay。
+
+3. **w/o prior 甚至略高于 full**  
+   这不是说 prior 完全没用，而是说明当前 prior head 的监督较弱，pseudo mask 噪声可能限制了它。论文里可以把 prior 作为可解释模块，但不要把它当作主要数值贡献。
+
+## 7. OpenRR / RAFA 最新结果
+
+这是 extra-data setting，使用 OpenRR train 的方法不能和课程公平结果混在一起。
+
+| Method | Uses OpenRR train? | OpenRR pairs | Course replay? | lambda_old | Balanced? | Course 5-set PSNR | SIR2 PSNR | OpenRR val PSNR | Six-set PSNR | Role |
+| --- | --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| ERRNet baseline | N | 0 | N | 0 | N | 24.5077 | 23.8201 | 25.4874 | 24.6709 | baseline |
+| BP-RAP RIC | N | 0 | N | 0 | N | 23.8919 | 24.8216 | 26.8597 | 24.3865 | course-fair main |
+| OpenRR-FT 1k | Y | 1000 | N | 0 | N | 23.7930 | 24.8573 | 28.9560 | 24.6535 | real-only target adaptation |
+| Soup a0.25 | indirect | 1000 | N/A | N/A | N | 23.9549 | 24.9246 | 27.4103 | 24.5308 | checkpoint soup fallback |
+| RAFA1k | Y | 1000 | Y | 0.2 | N | 23.9529 | 24.9043 | 27.7031 | 24.5779 | replay anchored adaptation |
+| RAFA3k | Y | 3000 | Y | 0.2 | N | 23.9906 | 24.9469 | 27.8483 | 24.6336 | main RAFA algorithm |
+| Balanced RAFA3k | Y | 3000 | Y | 0.2 | Y | 23.9999 | 24.9680 | 27.8349 | 24.6390 | previous metric-best |
+| Old04 | Y | 3000 | Y | 0.4 | N | 23.9663 | 24.9159 | 27.6352 | 24.5778 | stronger old distillation |
+| RAFA3k w/o old | Y | 3000 | Y | 0.0 | N | 24.0085 | 24.9772 | 28.0698 | 24.6853 | current best extra-data |
+| OpenRR-only 3k | Y | 3000 | N | 0.0 | N | 23.5304 | 24.7896 | 29.2549 | 24.4845 | no course replay |
+
+最新结论：
+
+1. **RAFA3k w/o old 是当前 extra-data 最优方法**
+   - Course 5-set: 24.0085
+   - SIR2 mean: 24.9772
+   - OpenRR val: 28.0698
+   - Six-set mean: 24.6853
+
+2. **OpenRR-only 3k 的 OpenRR val 最高，但课程集掉得明显**
+   - OpenRR val: 29.2549
+   - Course 5-set: 23.5304
+   - 说明只用 OpenRR 会过度偏向 OpenRR，course replay 是必要的。
+
+3. **old distillation 不是必要项**
+   - RAFA3k w/o old 比 RAFA3k 和 Balanced RAFA3k 都好。
+   - 说明 teacher old loss 可能限制了真实数据适配。
+
+4. **Balanced sampling 不是最终主贡献**
+   - Balanced RAFA3k 比 RAFA3k 稍好，但被 w/o old 超过。
+   - 可以作为探索实验，不作为最终选择。
+
+论文建议最终 extra-data 方法改成：
+
+> RAFA3k w/o old distillation
+
+更准确的命名可以是：
+
+> RAFA-OpenRR3k without old-model distillation
+
+或者：
+
+> RAFA-OpenRR3k replay-only
+
+## 8. OpenRR zero-shot 结果为什么重要
+
+在没有使用 OpenRR train 的情况下，BP-RAP RIC 已经在 OpenRR val 上超过 ERRNet：
+
+| Method | OpenRR val PSNR | SSIM | NCC | LMSE |
 | --- | ---: | ---: | ---: | ---: |
-| OpenRR train 1k | 148 | 352 | 352 | 148 |
-| Zhang train89 | 13 | 32 | 32 | 12 |
+| ERRNet baseline | 25.4874 | 0.9480 | 0.9641 | 0.0030 |
+| BP-RAP RIC | 26.8597 | 0.9600 | 0.9693 | 0.0018 |
 
-Paper use: include only if explaining balanced sampling; otherwise too detailed
-for the main text.
+提升：
 
-### 8.4 Negative RAFA Old04
+| 指标 | BP-RAP RIC vs ERRNet |
+| --- | ---: |
+| PSNR | +1.3723 dB |
+| SSIM | +0.0120 |
+| NCC | +0.0052 |
+| LMSE | -0.0012 |
 
-| Method | Difference | Evaluation type | Six-set PSNR | OpenRR val PSNR | Decision |
-| --- | --- | --- | ---: | ---: | --- |
-| RAFA3k Old04 | `lambda_old=0.4` instead of 0.2 | 512 diagnostic only | 24.3367 | 28.0531 | Do not formally evaluate; stronger old distillation hurts target adaptation. |
+这很适合写进论文，因为它说明：
 
-Paper use: one-line negative ablation if needed.
+> BP-RAP RIC 的真实场景提升不是只在 SIR2 上出现，它对 OpenRR 这种外部真实 benchmark 也有 zero-shot 泛化能力。
 
-## 9. What Has Result Comparisons But Should Not Be Main
+## 9. 我们到底做了哪些工作
 
-| Item | Why it is not main |
+按项目阶段整理：
+
+### 阶段 1：复现和评估 ERRNet baseline
+
+完成内容：
+
+- 配置课程数据集。
+- 跑 CEILNet、Zhang20、SIR2 Objects/Postcard/Wild。
+- 确认 ERRNet-Hyper 是强 baseline。
+
+结果：
+
+- ERRNet 在 CEILNet/Zhang20 很强。
+- 但在 SIR2 真实场景上仍有提升空间。
+
+### 阶段 2：实现 RAP-ERRNet
+
+完成内容：
+
+- 新增统一数据集适配器。
+- 新增反射物理合成。
+- 新增指标 PSNR/SSIM/NCC/LMSE。
+- 新增 RAP 模型：
+  - prior head
+  - gated adapter
+  - residual refinement
+  - residual scale
+  - anchor/delta losses
+
+结果：
+
+- from-scratch RAP 不稳定。
+- RAP-Hyper 证明真实场景 SIR2 有提升。
+
+### 阶段 3：BP-RAP 和 RIC
+
+完成内容：
+
+- 从 RAP-Hyper checkpoint 出发。
+- 冻结 backbone，短程 fine-tune 新模块。
+- 加入 RIC 反射不变一致性训练。
+- 加入 FSS 探索。
+
+结果：
+
+- BP-RAP RIC 成为课程公平主方法。
+- SIR2 三子集均超过 ERRNet。
+- CEILNet/Zhang20 仍低于 ERRNet。
+
+### 阶段 4：OpenRR 外部验证
+
+完成内容：
+
+- 下载并整理 OpenRR train/val。
+- 跑 OpenRR val zero-shot。
+- 跑 OpenRR-FT 1k。
+- 跑 checkpoint soup。
+
+结果：
+
+- BP-RAP RIC zero-shot 在 OpenRR val 比 ERRNet 高 +1.37 dB。
+- OpenRR-FT 能大幅提升 OpenRR，但有 source-domain drift。
+- Soup 能缓和 drift，但算法叙事不如 RAFA。
+
+### 阶段 5：RAFA 真实数据适配
+
+完成内容：
+
+- 实现 replay sampler。
+- 实现 course replay。
+- 实现 old-model distillation。
+- 跑 RAFA1k、RAFA3k、Balanced RAFA3k。
+- 跑 Old04、w/o old、OpenRR-only 3k。
+
+结果：
+
+- RAFA3k 明显优于 RAFA1k。
+- Balanced RAFA3k 曾是旧最优。
+- 最新 RAFA3k w/o old 成为当前 extra-data 最优。
+- OpenRR-only 证明 course replay 重要。
+
+### 阶段 6：最终消融和绘图
+
+完成内容：
+
+- 跑结构消融：
+  - w/o prior
+  - w/o gate
+  - w/o refinement
+  - w/o RIC
+  - RIC+FSS
+- 生成论文数值图：
+  - method_overview
+  - course_delta_psnr
+  - openrr_adaptation_summary
+- 增加定性图脚本：
+  - qualitative_existing
+  - qualitative_self
+  - prior_error_analysis
+  - failure_cases
+
+结果：
+
+- refinement 是最关键结构模块。
+- RAFA3k w/o old 是当前 extra-data 最佳。
+- 自采数据还没补，明天需要补。
+
+## 10. 定性图怎么选图和展示
+
+最新定性脚本：
+
+```text
+tools/make_paper_qualitative_figures.py
+```
+
+它会生成：
+
+| 文件 | 内容 |
 | --- | --- |
-| From-scratch RAP | Too weak on CEILNet/Zhang; useful only to justify pretrained baseline anchoring. |
-| RAP-Staged | Conservative but reduces SIR2 gains; not the best trade-off. |
-| BP-RAP RIC+FSS | Almost tied with RIC, not enough gain to justify as final method. |
-| Post-hoc residual/gate/lowfreq sweep | No training innovation; full residual wins. |
-| OpenRR-FT 1k real-only | Strong OpenRR 512 diagnostic but source-domain drift and mixed protocol. |
-| Soup alpha 0.25 | Useful fallback but less algorithmically clean than RAFA. |
-| Module-only soup | Did not beat raw RAFA. |
-| Old04 | Negative diagnostic. |
+| `paper/figures/qualitative_main.png/.pdf` | 合并主图，包含现有数据集 + self 占位 |
+| `paper/figures/qualitative_existing.png/.pdf` | 只包含现有公开数据集 |
+| `paper/figures/qualitative_self.png/.pdf` | 只包含自采数据，目前 self 缺失时是占位 |
+| `paper/figures/prior_error_analysis.png/.pdf` | prior 和 error map 分析 |
+| `paper/figures/failure_cases.png/.pdf` | CEILNet/Zhang20 失败案例 |
 
-## 10. Recommended Paper Selection
+选图规则：
 
-### 10.1 Must Include
+```text
+delta = PSNR(final_model) - PSNR(ERRNet)
+```
 
-| Paper section | Recommended content |
+具体规则：
+
+| 图 | 选图方式 |
 | --- | --- |
-| Baseline | ERRNet-Hyper, course 5-set formal metrics. |
-| Main method | BP-RAP RIC, course 5-set formal metrics, emphasizing SIR2 gains and CEILNet/Zhang weakness. |
-| Extra-data method | RAFA3k and/or Balanced RAFA3k, six-set formal metrics with OpenRR val. |
-| External validation | OpenRR zero-shot: BP-RAP RIC vs ERRNet, +1.3723 dB. |
-| Qualitative | Global top-better figure with 5-6 examples; optionally mention failure cases in appendix. |
-| Self-collected data | Pending; required by course. |
+| SIR2 Wild success | 选 delta 最大的成功样例 |
+| SIR2 Objects/Postcard success | 两个数据集合并后选 median improved，避免只挑极端 |
+| OpenRR success | 选 delta 最大的成功样例 |
+| Self success | 自采数据可用后选 delta 最大的样例 |
+| CEILNet failure | 选 delta 最小，即 ERRNet 赢最多 |
+| Zhang20 failure | 选 delta 最小，即 ERRNet 赢最多 |
 
-### 10.2 Good Ablations To Include If Space Allows
+展示列：
 
-| Ablation | Why include |
+```text
+qualitative_existing / qualitative_self:
+Input | ERRNet | BP-RAP RIC | RAFA final | GT
+
+prior_error_analysis:
+Input | GT | ERRNet Error | BP-RAP Error | RAFA Error | Prior Map
+
+failure_cases:
+Input | ERRNet | BP-RAP RIC | RAFA final | GT
+```
+
+当前建议定性图使用的 final model：
+
+```text
+RAFA3k w/o old
+checkpoint: checkpoints/bp_rap_rafa_openrr3k_no_old_e10/best.pt
+config: configs/bp_rap_rafa_openrr3k_no_old.yaml
+```
+
+## 11. 论文里建议写哪些结果
+
+### 正文必须写
+
+| 内容 | 原因 |
 | --- | --- |
-| RAP-Hyper vs BP-RAP RIC | Shows RIC improves the selected course-fair RAP family. |
-| RIC vs RIC+FSS | Shows FSS was explored but not selected. |
-| RAFA1k vs RAFA3k vs Balanced RAFA3k | Shows extra-data scaling and sampling refinement. |
-| Soup vs RAFA | Shows why RAFA is a better final extra-data story than checkpoint averaging. |
+| ERRNet baseline | 课程要求 |
+| BP-RAP RIC | 课程公平主方法 |
+| Course 5-set formal 表 | 课程要求 |
+| SIR2 mean / per-subset 提升 | 我们相对 baseline 的主要优势 |
+| OpenRR zero-shot | 证明真实场景外部泛化 |
+| RAFA3k w/o old | 当前 extra-data 最优 |
+| RAFA/OpenRR adaptation 表 | 展示额外数据适配效果 |
+| 自采数据 | 课程硬性要求，待补 |
+| qualitative_existing 和 failure_cases | 展示成功和失败案例 |
 
-### 10.3 Appendix / Not Necessary In Main Paper
+### 可以写成消融
 
-| Item | Placement |
+| 消融 | 结论 |
 | --- | --- |
-| Full post-hoc calibration sweep | Appendix or omit. |
-| Old04 negative diagnostic | Appendix or one sentence. |
-| Early from-scratch epoch50/epoch63 | Appendix or omit unless discussing iteration history. |
-| Per-dataset better/similar/worse visual sheets | Appendix; main text should use top-better figure. |
+| w/o refinement | 明显下降，证明 refinement 关键 |
+| w/o prior / w/o gate | 单独贡献有限，说明 prior/gate 主要是可解释空间适配 |
+| w/o RIC / RIC+FSS | 基本持平，说明这两个约束稳定但不是主提升来源 |
+| RAFA3k vs RAFA3k w/o old | old distillation 不必要，去掉后更好 |
+| RAFA3k w/o old vs OpenRR-only 3k | course replay 防止只偏向 OpenRR |
 
-## 11. Current Gaps
+### 不建议正文重点写
 
-| Gap | Impact | Next action |
+| 内容 | 原因 |
+| --- | --- |
+| RAP from scratch | 太弱，只作为早期探索 |
+| all-512 diagnostic sweep | 不是正式协议 |
+| Module-only soup | 没超过 RAFA |
+| Balanced sampling 作为主贡献 | 最新已不是最优 |
+| Old04 | 负结果，最多一行 |
+
+## 12. 当前最可信的论文叙事
+
+建议论文逻辑：
+
+1. 任务很难，ERRNet 是强 baseline。
+2. 我们先复现 ERRNet-Hyper。
+3. 直接从零训练 RAP 不稳定，所以采用 baseline-preserving 思路。
+4. BP-RAP 在 ERRNet 输出上做反射感知残差细化。
+5. BP-RAP RIC 在 SIR2 和 OpenRR zero-shot 上表现更好，但在 CEILNet/Zhang20 上不如 ERRNet。
+6. 为进一步提升真实场景，使用 OpenRR 做 extra-data adaptation。
+7. 直接 OpenRR-only 会损害课程分布，因此提出 RAFA：OpenRR supervision + course replay。
+8. 最新消融显示，去掉 old distillation 后效果更好，最终 extra-data 方法采用 RAFA3k w/o old。
+9. 最后展示定量、定性、失败案例和自采数据。
+
+## 13. 当前最终选择
+
+### 课程公平最终方法
+
+```text
+BP-RAP RIC
+checkpoint: checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt
+config: configs/bp_rap_hyper_zerores_staged_ric.yaml
+```
+
+理由：
+
+- 不使用 OpenRR train。
+- SIR2 三个真实子集均优于 ERRNet。
+- OpenRR val zero-shot 也优于 ERRNet。
+- 虽然 Course 5-set mean 低于 ERRNet，但这是合理 trade-off。
+
+### 额外数据最终方法
+
+```text
+RAFA3k w/o old
+checkpoint: checkpoints/bp_rap_rafa_openrr3k_no_old_e10/best.pt
+config: configs/bp_rap_rafa_openrr3k_no_old.yaml
+```
+
+理由：
+
+- 当前 Six-set mean 最高：24.6853。
+- Course 5-set、SIR2、OpenRR val 都优于 Balanced RAFA3k。
+- 比 OpenRR-only 更稳，说明 course replay 有价值。
+
+## 14. 还缺什么
+
+| 缺口 | 重要性 | 下一步 |
 | --- | --- | --- |
-| Self-collected 5 images not evaluated | Course requirement; must be fixed before final submission. | Collect paired images, run ERRNet/BP-RAP/RAFA metrics and visualization. |
-| Structural ablations w/o prior/gate/refinement are not completed | Would strengthen algorithm-completion score, but not strictly necessary if time is limited. | Run only if self-collected data and report figures are already done. |
-| Formal SOTA table is not fully reproduced | Could improve literature comparison, but course baseline comparison is more important. | Use cited paper numbers carefully, or avoid overclaiming SOTA. |
+| 自采数据 5 组 | 非常高，课程硬性要求 | 明天采集并放到 `data/self_collected/test/scene_xxx/` |
+| 自采数据 formal eval | 非常高 | 跑 ERRNet、BP-RAP RIC、RAFA3k w/o old |
+| 自采 qualitative_self | 高 | 自采 eval 后重跑定性图脚本 |
+| 论文更新最终方法 | 高 | 把 Balanced RAFA3k 改成 RAFA3k w/o old |
+| 检查定性图是否符合肉眼观感 | 高 | 下载 `paper/figures/*.png` 看图 |
 
-## 12. Bottom-Line Decision
+## 15. 当前应下载/保留的结果文件
 
-For the paper, the cleanest story is:
+服务器上应保留：
 
-1. Reproduce ERRNet-Hyper as the strong baseline.
-2. Present BP-RAP RIC as the course-fair improved method.
-3. State honestly that BP-RAP RIC loses on CEILNet/Zhang but improves all SIR2
-   subsets and OpenRR zero-shot.
-4. Present RAFA3k as the extra-data adaptation algorithm.
-5. Use Balanced RAFA3k as the final metric-best checkpoint, but describe its
-   gain as marginal.
-6. Put self-collected data and qualitative examples in the final report before
-   adding any more training sweeps.
+```text
+results/ABLATION_STRUCTURE_SUMMARY.md
+results/ABLATION_RAFA_SUMMARY.md
+results/FINAL_TABLES_FOR_PAPER.md
+results/SELF_COLLECTED_SUMMARY.md
+results/paper_qualitative/selection_summary.csv
+paper/figures/*.png
+paper/figures/*.pdf
+results/final_eval_*/
+```
+
+写论文最需要：
+
+```text
+paper/figures/method_overview.png/.pdf
+paper/figures/course_delta_psnr.png/.pdf
+paper/figures/openrr_adaptation_summary.png/.pdf
+paper/figures/qualitative_existing.png/.pdf
+paper/figures/prior_error_analysis.png/.pdf
+paper/figures/failure_cases.png/.pdf
+results/FINAL_TABLES_FOR_PAPER.md
+```
+
+明天补自采后还要更新：
+
+```text
+results/SELF_COLLECTED_SUMMARY.md
+paper/figures/qualitative_self.png/.pdf
+paper/figures/qualitative_main.png/.pdf
+results/final_eval_*_self/
+```
+
+## 16. 最终一句话
+
+这个项目目前已经不是简单“跑了一个 baseline”。完整工作包括：
+
+- 复现 ERRNet-Hyper baseline；
+- 实现统一数据和指标评估；
+- 设计并实现 BP-RAP 反射感知残差细化；
+- 探索 RIC、FSS、prior/gate/refinement 等结构消融；
+- 引入 OpenRR 做真实数据适配；
+- 设计 RAFA replay 机制避免 OpenRR-only 的分布漂移；
+- 通过最新消融发现 RAFA3k w/o old 是当前 extra-data 最优；
+- 生成论文用表格和图；
+- 还剩自采数据需要补齐。
+
+论文最稳的核心主张是：
+
+> 我们的方法不是在所有 benchmark 上全面超过 ERRNet，而是在真实反射场景上表现更好；通过 RAFA 引入真实 OpenRR 数据和课程 replay 后，进一步提升真实数据表现，同时避免纯 OpenRR fine-tuning 的分布漂移。
