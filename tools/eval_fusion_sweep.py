@@ -74,11 +74,32 @@ def _tensor_scalar(value) -> float:
     return float(value.detach().cpu().item())
 
 
+def _center_crop_tensor(tensor, size: tuple[int, int]):
+    h, w = size
+    top = max((tensor.shape[-2] - h) // 2, 0)
+    left = max((tensor.shape[-1] - w) // 2, 0)
+    return tensor[..., top : top + h, left : left + w]
+
+
+def _common_spatial_size(*tensors) -> tuple[int, int]:
+    heights = [int(tensor.shape[-2]) for tensor in tensors if tensor is not None]
+    widths = [int(tensor.shape[-1]) for tensor in tensors if tensor is not None]
+    if not heights or not widths:
+        raise ValueError("No tensors were provided for spatial alignment.")
+    return min(heights), min(widths)
+
+
+def _align_tensors(*tensors):
+    size = _common_spatial_size(*tensors)
+    return tuple(_center_crop_tensor(tensor, size) if tensor is not None else None for tensor in tensors)
+
+
 def _stats(prior, err_out, rafa_out, input_tensor, blur_sigma: float) -> Dict[str, float]:
     import torch
 
     from eval_all import _gaussian_blur_batch
 
+    input_tensor, err_out, rafa_out, prior = _align_tensors(input_tensor, err_out, rafa_out, prior)
     prior = prior.detach().clamp(0.0, 1.0)
     if prior.shape[1] != 1:
         prior = prior.mean(dim=1, keepdim=True)
@@ -165,10 +186,17 @@ def evaluate_dataset(args: argparse.Namespace, dataset_name: str, errnet, rafa, 
         prior = rafa_outputs.get("prior")
         if prior is None:
             prior = torch.ones((1, 1, input_tensor.shape[-2], input_tensor.shape[-1]), dtype=input_tensor.dtype, device=device)
-        stats = _stats(prior, err_out, rafa_out, input_tensor, float(args.blur_sigma))
+        input_aligned, target_aligned, err_out, rafa_out, prior = _align_tensors(
+            input_tensor,
+            target_tensor,
+            err_out,
+            rafa_out,
+            prior,
+        )
+        stats = _stats(prior, err_out, rafa_out, input_aligned, float(args.blur_sigma))
 
-        err_metrics = compute_metrics(err_out[0], target_tensor[0])
-        rafa_metrics = compute_metrics(rafa_out[0], target_tensor[0])
+        err_metrics = compute_metrics(err_out[0], target_aligned[0])
+        rafa_metrics = compute_metrics(rafa_out[0], target_aligned[0])
         feature_row: Dict[str, Any] = {
             "dataset": dataset_name,
             "name": name,
@@ -180,13 +208,13 @@ def evaluate_dataset(args: argparse.Namespace, dataset_name: str, errnet, rafa, 
 
         for label, alpha in zip([_alpha_tag(a) for a in alphas], alphas):
             fused = (float(alpha) * rafa_out + (1.0 - float(alpha)) * err_out).clamp(0.0, 1.0)
-            metrics = compute_metrics(fused[0], target_tensor[0])
+            metrics = compute_metrics(fused[0], target_aligned[0])
             rows_by_label[label].append({"dataset": dataset_name, "name": name, **metrics})
 
         if args.include_adaptive:
             alpha = _adaptive_alpha(stats, args)
             fused = (float(alpha) * rafa_out + (1.0 - float(alpha)) * err_out).clamp(0.0, 1.0)
-            metrics = compute_metrics(fused[0], target_tensor[0])
+            metrics = compute_metrics(fused[0], target_aligned[0])
             rows_by_label["adaptive"].append({"dataset": dataset_name, "name": name, **metrics})
             feature_row["adaptive_alpha"] = alpha
 
