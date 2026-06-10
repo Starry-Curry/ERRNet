@@ -45,7 +45,7 @@
 
 \newcommand{\method}{BP-RAP}
 \newcommand{\rafa}{RAFA}
-\newcommand{\finalmodel}{Strength-balanced RAFA-OpenRR3k}
+\newcommand{\finalmodel}{ERRNet--RAFA Fusion ($\alpha=0.50$)}
 \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
 
 \newcommand{\figplaceholder}[2]{%
@@ -76,10 +76,12 @@
 zero-residual 初始化和 baseline-preserving 约束，在高反射区域进行局部修正，同时尽量保持低反射区域的
 baseline fidelity。进一步地，为利用额外真实配对数据而避免源域漂移，本文提出
 \rafa{}（Replay-Anchored Fine-tuning for Real Reflection Adaptation），在 OpenRR 真实数据上适配时混入课程数据
-回放并加入旧模型蒸馏。课程公平版本 BP-RAP RIC 在 SIR$^2$ Objects/Postcard/Wild 上相对 ERRNet 分别提升
-1.19/0.56/1.25 dB PSNR，但在 CEILNet 和 Zhang real20 上低于 ERRNet；使用额外 OpenRR 数据后，最终 checkpoint
-\finalmodel{} 在六个评测集合上的平均 PSNR 为 24.6390，并在 OpenRR val 上比课程公平 BP-RAP RIC 提升约
-0.98 dB。本文同时给出定量表格、结果趋势图和优势样例可视化，分析方法的适用场景和失败原因。
+回放，缓解只针对目标域微调带来的源域漂移。实验表明，课程公平版本 BP-RAP RIC 在 SIR$^2$
+Objects/Postcard/Wild 上相对 ERRNet 分别提升 1.19/0.56/1.25 dB PSNR，但在 CEILNet 和 Zhang real20 上低于
+ERRNet；RAFA3k-no-old 单模型进一步提升 SIR$^2$ 和 OpenRR，却仍保留 CEILNet/Zhang20 退化。为利用二者互补性，
+最终采用 \finalmodel{}：推理时融合 ERRNet 与 RAFA 输出。该策略在 Course 5-set、SIR$^2$、OpenRR val 和六集均值上
+分别比 ERRNet 提升 0.28/1.02/1.73/0.52 dB PSNR，同时将 RAFA 在 CEILNet/Zhang20 上的大幅退化显著拉回。
+本文同时给出定量表格、消融、融合路由统计、优势样例和失败案例，分析方法的适用场景和局限。
 \end{abstract}
 
 \section{引言}
@@ -101,8 +103,9 @@ baseline，尤其在 CEILNet 和 Zhang real20 这类像素对齐 benchmark 上�
 \begin{itemize}
   \item 复现并系统评估 ERRNet-Hyper baseline，明确其在不同测试集上的强项和局限。
   \item 提出 BP-RAP-ERRNet，将改进建模为反射先验引导的受控残差细化，而不是完全重写输出。
-  \item 提出 RAFA 真实数据适配，通过 OpenRR 真实监督、课程数据回放和旧模型蒸馏缓解真实域微调的源域漂移。
-  \item 给出正结果、负结果和可视化案例，避免只展示单一平均指标。
+  \item 提出 RAFA 真实数据适配，通过 OpenRR 真实监督和课程数据回放缓解真实域微调的源域漂移。
+  \item 提出最终推理融合策略，结合 ERRNet 在强像素对齐 benchmark 上的稳定性和 RAFA 在真实场景上的优势。
+  \item 给出正结果、负结果、融合统计和可视化案例，避免只展示单一平均指标。
 \end{itemize}
 
 \section{相关工作}
@@ -164,27 +167,24 @@ BP-RAP RIC 是本文的课程公平主方法。
 
 \subsection{Replay-anchored real-data adaptation}
 
-OpenRR 真实配对数据能提升真实域泛化，但直接微调容易损害课程数据集表现。RAFA 使用三项机制缓解该问题：
+OpenRR 真实配对数据能提升真实域泛化，但直接微调容易损害课程数据集表现。RAFA 使用以下机制缓解该问题：
 \begin{itemize}
   \item \textbf{OpenRR supervision:} 使用真实配对 OpenRR train 提供目标域监督。
   \item \textbf{Course replay:} 每个 epoch 中保持课程数据回放，防止训练完全偏向 OpenRR。
-  \item \textbf{Old-model distillation:} 对课程回放样本约束 student 接近原 BP-RAP RIC teacher：
-  \begin{equation}
-  \mathcal{L}_{old}=\|G_\theta(I_c)-G_{\mathrm{teacher}}(I_c)\|_1.
-  \end{equation}
+  \item \textbf{Frozen-backbone adaptation:} 冻结 ERRNet backbone，只调整 prior/gate/refinement 等轻量模块，降低破坏 baseline 的风险。
 \end{itemize}
-最终 extra-data 模型使用 OpenRR train 3k、VOC synthesis 和 Zhang real89，OpenRR/course 采样质量各占 0.5。
+我们也测试了 old-model distillation，但最终结果显示 $\lambda_{old}=0$ 的 RAFA3k-no-old 更适合真实数据适配，
+说明过强的旧模型约束会限制 OpenRR 域收益。
 
-\subsection{Reflection-strength balanced replay}
+\subsection{Inference fusion}
 
-最终 checkpoint 在 RAFA3k 基础上进一步使用 reflection-strength balanced replay。我们用
+RAFA 单模型在 SIR$^2$/OpenRR 上明显强于 ERRNet，但在 CEILNet/Zhang20 上退化。我们进一步尝试 strong reflection
+synthesis 与 hard-anchor 训练，发现它不能有效弥合该 gap。因此最终采用简单但有效的推理融合：
 \begin{equation}
-\mathrm{strength}=\mathbb{E}|I-T|,\quad
-\mathrm{hf\_ratio}=\frac{\mathbb{E}|\mathrm{highpass}(|I-T|)|}{\mathbb{E}|I-T|+\epsilon}
+\hat{T}_{fusion} = \alpha \hat{T}_{RAFA} + (1-\alpha)\hat{T}_{ERRNet}.
 \end{equation}
-将 OpenRR 样本划分为 weak/strong 与 veil/ghost 四类，并在 OpenRR 采样质量内部均衡四类样本。该策略的数值提升很小，
-但结果稳定，因此作为最终 metric-best checkpoint。需要强调的是，本文最终方法不是 diffusion 或生成式方案，也不使用测试时增强；
-推理阶段是单次网络 forward。
+其中 $\alpha=0$ 等价于 ERRNet，$\alpha=1$ 等价于 RAFA3k-no-old。本文主结果使用 $\alpha=0.50$。该策略不是硬路由，
+每张图都使用两个模型输出；其目的不是追求某个单一数据集最优，而是在 CEILNet/Zhang 的稳定性与 SIR$^2$/OpenRR 的真实场景收益之间取得更可靠的折中。
 
 \section{实验设置}
 
@@ -219,8 +219,8 @@ Test & Self-collected 5+ pairs & \todo{待采集与评估} \\
 \begin{itemize}
   \item \textbf{ERRNet baseline:} 课程指定 CVPR 2019 baseline。
   \item \textbf{BP-RAP RIC:} 不使用 OpenRR 的课程公平主方法。
-  \item \textbf{RAFA3k:} 使用 OpenRR train 3k 的真实数据适配算法。
-  \item \textbf{Strength-balanced RAFA3k:} 最终 metric-best checkpoint，作为最终可视化模型。
+  \item \textbf{RAFA3k-no-old:} 使用 OpenRR train 3k 和课程 replay 的真实数据适配单模型。
+  \item \textbf{Fusion a=0.50:} 推理时等权融合 ERRNet 与 RAFA3k-no-old，作为最终推荐方法。
 \end{itemize}
 
 \section{实验结果}
@@ -250,39 +250,39 @@ SIR$^2$ Wild & 24.8763 & 0.8861 & 0.9359 & 0.0083 & 26.1264 & 0.9192 & 0.9576 & 
 表~\ref{tab:course} 显示，BP-RAP RIC 并没有全面超过 ERRNet。它在 CEILNet 和 Zhang real20 上明显下降，
 但在 SIR$^2$ 三个真实场景子集上稳定提升。这说明本文方法更偏向真实反射场景，而不是强像素对齐 synthetic benchmark。
 
-\subsection{额外真实数据适配}
+\subsection{额外真实数据适配与推理融合}
 
 \begin{table}[!htbp]
 \centering
-\caption{RAFA 和最终 balanced checkpoint 的正式结果。Balanced RAFA3k 是最终 metric-best checkpoint，但相对 RAFA3k 的增益很小。}
+\caption{RAFA 与最终推理融合结果。Course 为 CEILNet、Zhang20 和 SIR$^2$ 三个子集的平均；Six-set 进一步包含 OpenRR val。}
 \label{tab:extra}
 \resizebox{\linewidth}{!}{%
 \begin{tabular}{lrrrrrrrr}
 \toprule
-\multirow{2}{*}{Dataset} & \multicolumn{4}{c}{RAFA3k} & \multicolumn{4}{c}{Balanced RAFA3k} \\
-\cmidrule(lr){2-5}\cmidrule(lr){6-9}
- & PSNR & SSIM & NCC & LMSE & PSNR & SSIM & NCC & LMSE \\
+\multirow{2}{*}{Method} & \multicolumn{2}{c}{Course} & \multicolumn{2}{c}{SIR$^2$} & \multicolumn{2}{c}{OpenRR} & \multicolumn{2}{c}{Six-set} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+ & PSNR & $\Delta$ & PSNR & $\Delta$ & PSNR & $\Delta$ & PSNR & $\Delta$ \\
 \midrule
-CEILNet Table2 & 24.0504 & 0.9076 & 0.9534 & 0.0072 & 24.0417 & 0.9073 & 0.9533 & 0.0072 \\
-Zhang real20, 512 & 21.0620 & 0.7821 & 0.8594 & 0.0256 & 21.0535 & 0.7827 & 0.8591 & 0.0256 \\
-SIR$^2$ Objects & 26.0450 & 0.9141 & 0.9863 & 0.0025 & 26.0617 & 0.9141 & 0.9863 & 0.0025 \\
-SIR$^2$ Postcard & 22.6764 & 0.8948 & 0.9532 & 0.0036 & 22.6947 & 0.8945 & 0.9531 & 0.0036 \\
-SIR$^2$ Wild & 26.1194 & 0.9203 & 0.9578 & 0.0040 & 26.1477 & 0.9205 & 0.9578 & 0.0040 \\
-OpenRR val & 27.8483 & 0.9618 & 0.9708 & 0.0016 & 27.8349 & 0.9618 & 0.9707 & 0.0016 \\
-\midrule
-Mean & 24.6336 & 0.8968 & 0.9468 & 0.0074 & 24.6390 & 0.8968 & 0.9467 & 0.0074 \\
+ERRNet & 24.5077 & 0.0000 & 23.8201 & 0.0000 & 25.4874 & 0.0000 & 24.6709 & 0.0000 \\
+Fusion $\alpha=0.25$ & 24.8235 & +0.3159 & 24.4009 & +0.5808 & 26.3980 & +0.9106 & 25.0859 & +0.4150 \\
+Fusion $\alpha=0.50$ & 24.7864 & +0.2787 & 24.8360 & +1.0159 & 27.2208 & +1.7334 & 25.1921 & +0.5212 \\
+Fusion $\alpha=0.75$ & 24.5022 & -0.0054 & 25.0495 & +1.2294 & 27.8463 & +2.3589 & 25.0596 & +0.3886 \\
+RAFA3k-no-old & 24.0085 & -0.4992 & 24.9772 & +1.1571 & 28.0698 & +2.5824 & 24.6853 & +0.0144 \\
+Adaptive fusion & 24.6497 & +0.1420 & 25.0170 & +1.1970 & 27.9558 & +2.4684 & 25.2007 & +0.5297 \\
 \bottomrule
 \end{tabular}}
 \end{table}
 
-图~\ref{fig:summary} 进一步展示了结果趋势。BP-RAP RIC 在 SIR$^2$ 上具有优势；RAFA3k 显著提升 OpenRR val；
-balanced replay 主要带来很小的均值收益，因此在论文叙事中应作为采样 refinement，而不是主要算法贡献。
+表~\ref{tab:extra} 显示，RAFA3k-no-old 单模型虽然在 SIR$^2$ 和 OpenRR 上最强，但 Course mean 低于 ERRNet。
+Fusion $\alpha=0.50$ 在 Course、SIR$^2$、OpenRR 和 Six-set 上均超过 ERRNet，是本文最终推荐方法。
+Fusion $\alpha=0.25$ 更保守，几乎保持 CEILNet/Zhang20 的 ERRNet fidelity；adaptive fusion 的 Six-set 略高，
+但 selector 对 CEILNet/Zhang20 不够稳，因此只作为分析而非主方法。
 
 \begin{figure}[!htbp]
 \centering
-\maybeincludegraphics[height=0.38\textheight]{figures/result_summary.png}
-\caption{定量结果图示占位。左：课程 benchmark PSNR；中：BP-RAP RIC 相对 ERRNet 的 PSNR 增益；
-右：extra-data 适配对 OpenRR 和六集均值的影响。}
+\maybeincludegraphics[height=0.38\textheight]{figures/openrr_adaptation_summary.png}
+\caption{OpenRR/RAFA 适配结果图示。OpenRR 真实数据显著提升真实场景，但单模型会带来 CEILNet/Zhang20 trade-off，
+最终通过 ERRNet--RAFA fusion 缓解。}
 \label{fig:summary}
 \end{figure}
 
@@ -300,30 +300,42 @@ OpenRR-FT & direct OpenRR fine-tuning & OpenRR rises, but source-domain drift ap
 OpenRR-Soup & post-hoc checkpoint averaging & stable fallback, mean PSNR 24.5308 \\
 RAFA1k & replay + teacher distillation & better algorithmic adaptation, mean PSNR 24.5779 \\
 RAFA3k & larger OpenRR supervision & main adaptation result, mean PSNR 24.6336 \\
-Balanced RAFA3k & balance weak/strong and veil/ghost bins & metric-best, mean PSNR 24.6390 \\
-Old04 & stronger old-model distillation & worse; OpenRR drops by 0.23 dB in 512 diagnostic \\
+Balanced RAFA3k & balance weak/strong and veil/ghost bins & small historical mean gain, PSNR 24.6390 \\
+RAFA3k w/o old & remove old-model distillation & best single RAFA model; OpenRR 28.0698 \\
+HardSynth & strong reflection synthesis + hard anchor & nearly no CEILNet/Zhang recovery; not main path \\
+Fusion $\alpha=0.50$ & inference fusion of ERRNet and RAFA & recommended final method; Six-set PSNR 25.1921 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-当前实验已经足以支撑 baseline 复现、改进算法和 extra-data 适配分析。若时间允许，最值得补充的是结构消融
-（w/o prior、w/o gate、w/o refinement），它能更直接证明每个模块的必要性；但从课程要求看，当前更紧迫的是完成自采数据评估。
+HardSynth 的负结果说明，单纯继续训练难以同时修复 CEILNet/Zhang 与真实场景 trade-off；推理融合则以很低成本利用了
+ERRNet 与 RAFA 的互补性。当前实验已经足以支撑 baseline 复现、改进算法、extra-data 适配和最终融合分析。
+从课程要求看，剩余最紧迫的是完成自采数据评估。
 
 \section{定性结果}
 
-为了避免把每个数据集都放一张过长的图，正文只展示跨数据集筛选出的 5--6 个优势样例。筛选准则为单图 PSNR 差：
+为了避免把每个数据集都放一张过长的图，正文只展示跨数据集筛选出的代表性样例。筛选准则为单图 PSNR 差：
 \begin{equation}
-\Delta_{\mathrm{PSNR}}=\mathrm{PSNR}(\mathrm{RAFA},GT)-\mathrm{PSNR}(\mathrm{ERRNet},GT).
+\Delta_{\mathrm{PSNR}}=\mathrm{PSNR}(\mathrm{Fusion},GT)-\mathrm{PSNR}(\mathrm{ERRNet},GT).
 \end{equation}
-图~\ref{fig:top-better} 中每一行展示 Input、ERRNet、BP-RAP RIC、最终 RAFA、GT、Error map 和 Prior map。
-这些样例用于说明本文方法在真实反射、局部高亮或重影场景中的优势。
+图~\ref{fig:fusion-main} 中每一行展示 Input、ERRNet、RAFA3k-no-old、Fusion $\alpha=0.50$ 和 GT。
+这些样例用于说明：ERRNet 在真实反射区域常出现过暗、雾化或细节损失，RAFA 能恢复更多真实结构，而 Fusion 在保留稳定性的同时
+进一步改善部分样例。
 
 \begin{figure}[!htbp]
 \centering
-\maybeincludegraphics{figures/top_better.png}
-\caption{跨数据集选择的优势样例占位。每行显示 Input、ERRNet、BP-RAP RIC、RAFA-Balanced、GT、Error 和 Prior。
-该图应由 \texttt{selection\_mode=top\_better} 自动生成。}
-\label{fig:top-better}
+\maybeincludegraphics{figures/fusion_qualitative_main.png}
+\caption{最终融合方法的定性结果。每行显示 Input、ERRNet、RAFA3k-no-old、Fusion $\alpha=0.50$ 和 GT。
+正文主图优先展示 SIR$^2$/OpenRR/自采等真实场景成功案例。}
+\label{fig:fusion-main}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\maybeincludegraphics{figures/fusion_failure_cases.png}
+\caption{CEILNet/Zhang20 失败案例。ERRNet 对部分强低频反射和全局色调变化仍更强；Fusion 明显保护了 RAFA 单模型，
+但不能完全追上 ERRNet。}
+\label{fig:fusion-failure}
 \end{figure}
 
 \FloatBarrier
@@ -332,7 +344,7 @@ Old04 & stronger old-model distillation & worse; OpenRR drops by 0.23 dB in 512 
 
 课程要求在自己收集的至少五张图像上比较 baseline 和改进方法。该部分仍需补充。建议采集 5--10 组 paired scenes：
 固定相机位置，先拍摄隔着玻璃的 \texttt{blended.png}，再通过遮挡反射源、贴近玻璃或改变灯光获得近似
-\texttt{transmission.png}。采集后应报告 ERRNet、BP-RAP RIC 和 RAFA-Balanced 的 PSNR、SSIM、NCC、LMSE。
+\texttt{transmission.png}。采集后应报告 ERRNet、RAFA3k-no-old 和 Fusion $\alpha=0.50$ 的 PSNR、SSIM、NCC、LMSE。
 
 \begin{table}[!htbp]
 \centering
@@ -343,8 +355,8 @@ Old04 & stronger old-model distillation & worse; OpenRR drops by 0.23 dB in 512 
 Method & PSNR & SSIM & NCC & LMSE \\
 \midrule
 ERRNet baseline & \todo{fill} & \todo{fill} & \todo{fill} & \todo{fill} \\
-BP-RAP RIC & \todo{fill} & \todo{fill} & \todo{fill} & \todo{fill} \\
-RAFA-Balanced & \todo{fill} & \todo{fill} & \todo{fill} & \todo{fill} \\
+RAFA3k-no-old & \todo{fill} & \todo{fill} & \todo{fill} & \todo{fill} \\
+Fusion $\alpha=0.50$ & \todo{fill} & \todo{fill} & \todo{fill} & \todo{fill} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -352,24 +364,24 @@ RAFA-Balanced & \todo{fill} & \todo{fill} & \todo{fill} & \todo{fill} \\
 \section{讨论}
 
 \paragraph{为什么不是所有数据集都超过 ERRNet}
-ERRNet-Hyper 在 CEILNet 和 Zhang real20 上很强，尤其擅长保持像素级 fidelity。BP-RAP 的残差修正即使被 prior 和 residual scale 限制，
-仍可能带来轻微颜色或纹理偏移，因此在这些强对齐 benchmark 上下降。
+ERRNet-Hyper 在 CEILNet 和 Zhang real20 上很强，尤其擅长强像素对齐 benchmark 的 fidelity。RAFA3k-no-old 会更偏向真实反射，
+因此在这两个集合上出现 under-removal 和色调偏移。Fusion $\alpha=0.50$ 大幅缓解该退化，但在最困难的 CEILNet/Zhang 样例上仍可能弱于 ERRNet。
 
 \paragraph{为什么真实场景更有收益}
 SIR$^2$ 和 OpenRR 的反射更复杂，局部高亮、重影和真实玻璃污染更常见。Prior-guided residual refinement 更适合此类局部修正，
-RAFA 又利用真实配对数据进行适配，因此在真实场景上更有优势。
+RAFA 又利用真实配对数据进行适配，因此在真实场景上更有优势。Fusion 继承了 RAFA 的真实场景收益，同时保留部分 ERRNet 的像素稳定性。
 
 \paragraph{实验是否充分}
 从课程评分角度看，当前已覆盖 baseline、改进算法、多个公共测试集、额外真实数据、负结果和可视化分析；实验主体是充分的。
-不足之处主要有两点：第一，自采数据尚未补齐，这是课程硬性要求；第二，结构消融仍可增强说服力。若时间有限，应优先完成自采数据；
-若还有 1--2 天，可补充 w/o prior、w/o gate、w/o refinement 的轻量消融。
+不足之处主要是自采数据尚未补齐，这是课程硬性要求。结构消融、RAFA 变体、HardSynth 负结果和 fusion sweep 已经能支撑主要技术结论；
+若时间有限，应优先完成自采数据和最终图表整理。
 
 \section{结论}
 
-本文完成了课程指定 ERRNet baseline 的复现和系统评估，并提出 BP-RAP-ERRNet 与 RAFA 真实数据适配。
-结果表明，本文方法不是对 ERRNet 的全面替代：它在 CEILNet/Zhang 上弱于 baseline，但在 SIR$^2$ 和 OpenRR 等真实场景中更有优势。
-最终采用 RAFA-OpenRR3k 作为主要 extra-data 算法，并选择 strength-balanced RAFA3k 作为 metric-best checkpoint。
-该项目的核心经验是：图像复原模型的评价必须区分 benchmark 类型和真实场景需求，同时报告成功、相近和失败案例，才能形成可信结论。
+本文完成了课程指定 ERRNet baseline 的复现和系统评估，并提出 BP-RAP-ERRNet、RAFA 真实数据适配和最终 ERRNet--RAFA 推理融合。
+结果表明，RAFA 单模型能显著提升 SIR$^2$ 和 OpenRR，但会损害 CEILNet/Zhang20；Fusion $\alpha=0.50$ 则在 Course 5-set、
+SIR$^2$、OpenRR 和六集均值上均超过 ERRNet，同时显著缓解 RAFA 的 CEILNet/Zhang20 退化。该项目的核心经验是：
+图像复原模型的评价必须区分 benchmark 类型和真实场景需求，同时报告成功、保护和失败案例，才能形成可信结论。
 
 \section*{代码、权重与成员贡献}
 
@@ -386,35 +398,35 @@ RAFA 又利用真实配对数据进行适配，因此在真实场景上更有优
 
 \section{复现与制图命令}
 
-\paragraph{生成正文优势样例图}
+\paragraph{生成正文融合样例图}
 \begin{verbatim}
-python tools/make_final_visualizations.py \
+python tools/make_fusion_qualitative_figures.py \
   --data_root ./data \
   --datasets ceilnet,zhang20,sir2_objects,sir2_postcard,sir2_wild,openrr_val \
-  --out_dir results/final_visuals_top_better \
-  --selection_mode top_better \
-  --max_images 6 \
+  --figures_dir paper/figures \
+  --out_dir results/fusion_qualitative_a0p50 \
   --max_long_edge 512 \
-  --row_width 2450 \
   --errnet_ckpt checkpoints/errnet/errnet_060_00463920.pt \
   --errnet_hyper \
-  --bprap_ckpt checkpoints/bp_rap_hyper_ric_ft_from_hyper_ppu_bs24/best.pt \
-  --bprap_config configs/bp_rap_hyper_zerores_staged_ric.yaml \
-  --rafa_ckpt checkpoints/bp_rap_rafa_openrr3k_balanced_e10/best.pt \
-  --rafa_config configs/bp_rap_rafa_openrr3k_balanced.yaml \
-  --rafa_label RAFA-Balanced \
+  --rafa_ckpt checkpoints/bp_rap_rafa_openrr3k_no_old_e10/best.pt \
+  --rafa_config configs/bp_rap_rafa_openrr3k_no_old.yaml \
+  --alpha 0.5 \
   --device auto
 \end{verbatim}
 
-\paragraph{生成结果图表}
+\paragraph{生成融合统计}
 \begin{verbatim}
-python tools/make_paper_result_plots.py --out_dir paper/figures
+python tools/analyze_fusion_sweep.py \
+  --standard_dir results/fusion_rafa3k_no_old_standard \
+  --zhang_dir results/fusion_rafa3k_no_old_zhang20_512 \
+  --out results/FUSION_ROUTING_ANALYSIS.md
 \end{verbatim}
 
 \paragraph{上传到 Overleaf 前复制图片}
 \begin{verbatim}
 mkdir -p paper/figures
-cp results/final_visuals_top_better/contact_sheets/top_better.png paper/figures/
+cp paper/figures/fusion_qualitative_main.png paper/figures/
+cp paper/figures/fusion_failure_cases.png paper/figures/
 \end{verbatim}
 
 \begin{thebibliography}{9}

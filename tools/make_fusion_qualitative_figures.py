@@ -250,7 +250,6 @@ def main() -> None:
         ("sir2_wild", "Fusion_minus_ERRNet", "top", "SIR2 Wild gain"),
         ("sir2_objects,sir2_postcard", "Fusion_minus_ERRNet", "median", "SIR2 median gain"),
         ("openrr_val", "Fusion_minus_ERRNet", "top", "OpenRR gain"),
-        ("ceilnet,zhang20", "Fusion_minus_RAFA", "top", "CEILNet/Zhang protection"),
     ]
     if scores.get("self"):
         selection_specs.append(("self", "Fusion_minus_ERRNet", "top", "Self-collected gain"))
@@ -272,6 +271,30 @@ def main() -> None:
             _draw_grid(rows, ["Input", "ERRNet", "RAFA", f"Fusion a={args.alpha:.2f}", "GT"], titles, int(args.cell_width)),
             figures_dir,
             "fusion_qualitative_main",
+        )
+
+    protect_records = []
+    for name in ("ceilnet", "zhang20"):
+        record = _select_top(scores.get(name, []), "Fusion_minus_RAFA", positive=True)
+        if record is not None:
+            protect_records.append(record)
+    protect_rows: List[List[np.ndarray]] = []
+    protect_titles: List[str] = []
+    for record in protect_records:
+        row, title = _row_for_record(record, datasets, errnet, rafa, device, float(args.alpha))
+        protect_rows.append(row)
+        protect_titles.append(f"Protection: {title}")
+        selected.append(record)
+    if protect_rows:
+        _save(
+            _draw_grid(
+                protect_rows,
+                ["Input", "ERRNet", "RAFA", f"Fusion a={args.alpha:.2f}", "GT"],
+                protect_titles,
+                int(args.cell_width),
+            ),
+            figures_dir,
+            "fusion_protection_cases",
         )
 
     fail_records = []
