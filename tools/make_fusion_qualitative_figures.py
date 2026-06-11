@@ -183,6 +183,31 @@ def _select_median_positive(records: Iterable[Mapping[str, Any]], key: str) -> O
     return pool[len(pool) // 2] if pool else None
 
 
+def _select_top_beats_both(records: Iterable[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    pool = [
+        row
+        for row in records
+        if float(row["Fusion_minus_ERRNet"]) > 0 and float(row["Fusion_minus_RAFA"]) > 0
+    ]
+    if not pool:
+        return _select_top(records, "Fusion_minus_ERRNet", positive=True)
+    return max(pool, key=lambda row: min(float(row["Fusion_minus_ERRNet"]), float(row["Fusion_minus_RAFA"])))
+
+
+def _select_median_beats_both(records: Iterable[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    pool = sorted(
+        (
+            row
+            for row in records
+            if float(row["Fusion_minus_ERRNet"]) > 0 and float(row["Fusion_minus_RAFA"]) > 0
+        ),
+        key=lambda row: min(float(row["Fusion_minus_ERRNet"]), float(row["Fusion_minus_RAFA"])),
+    )
+    if not pool:
+        return _select_median_positive(records, "Fusion_minus_ERRNet")
+    return pool[len(pool) // 2]
+
+
 def _select_failure(records: Iterable[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
     pool = [row for row in records if math.isfinite(float(row["Fusion_minus_ERRNet"]))]
     if not pool:
@@ -247,18 +272,23 @@ def main() -> None:
     titles: List[str] = []
     selected: List[Mapping[str, Any]] = []
     selection_specs = [
-        ("sir2_wild", "Fusion_minus_ERRNet", "top", "SIR2 Wild gain"),
-        ("sir2_objects,sir2_postcard", "Fusion_minus_ERRNet", "median", "SIR2 median gain"),
-        ("openrr_val", "Fusion_minus_ERRNet", "top", "OpenRR gain"),
+        ("sir2_wild", "both", "top_both", "SIR2 Wild gain"),
+        ("sir2_objects,sir2_postcard", "both", "median_both", "SIR2 median gain"),
+        ("openrr_val", "both", "top_both", "OpenRR gain"),
     ]
     if scores.get("self"):
-        selection_specs.append(("self", "Fusion_minus_ERRNet", "top", "Self-collected gain"))
+        selection_specs.append(("self", "both", "top_both", "Self-collected gain"))
 
     for dataset_group, key, mode, title_prefix in selection_specs:
         candidates: List[Mapping[str, Any]] = []
         for name in dataset_group.split(","):
             candidates.extend(scores.get(name, []))
-        record = _select_top(candidates, key, positive=True) if mode == "top" else _select_median_positive(candidates, key)
+        if mode == "top_both":
+            record = _select_top_beats_both(candidates)
+        elif mode == "median_both":
+            record = _select_median_beats_both(candidates)
+        else:
+            record = _select_top(candidates, key, positive=True) if mode == "top" else _select_median_positive(candidates, key)
         if record is None:
             continue
         row, title = _row_for_record(record, datasets, errnet, rafa, device, float(args.alpha))
