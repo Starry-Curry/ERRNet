@@ -234,7 +234,7 @@ alpha = 0.50
   - SIR2 Postcard 179。
   - SIR2 Wild 101。
   - OpenRR val 300。
-  - Self-collected >=5，待补。
+  - Self-collected 7：手机拍摄的 paired scenes，对反射明显的中心区域做 1:1 裁剪。
 
 公平性口径：
 
@@ -361,7 +361,7 @@ alpha = 0.50
 - SIR2 Wild：Fusion 同时超过 ERRNet 和 RAFA，强正例。
 - SIR2 Objects/Postcard：中等稳定提升。
 - OpenRR：Fusion 明显优于 ERRNet，但弱于 RAFA，体现折中。
-- Self-collected：待补。
+- Self-collected：真实采集补充验证，Fusion a=0.50 相对 ERRNet 有小幅 PSNR 提升，但由于拍摄配准和曝光误差，不应作为最强论据。
 
 列：
 
@@ -411,19 +411,28 @@ data/self_collected/test/scene_001/transmission.png
 ...
 ```
 
-至少跑：
+当前数据：
 
-- ERRNet。
-- RAFA3k no-old。
-- Fusion a=0.50。
+- 共 7 组 paired scenes。
+- 原始手机图片中只有中间反射片区域严格对应，因此统一裁剪成偏中心 1:1 区域。
+- `transmission.png` 是无反射参考，但仍可能存在轻微视角、曝光、手持位移差异；因此 self 指标用于补充验证，不作为主结论的唯一依据。
 
 表格：
 
 | Method | PSNR | SSIM | NCC | LMSE |
 | --- | ---: | ---: | ---: | ---: |
-| ERRNet | TODO | TODO | TODO | TODO |
-| RAFA3k no-old | TODO | TODO | TODO | TODO |
-| Fusion a=0.50 | TODO | TODO | TODO | TODO |
+| ERRNet | 19.5497 | 0.6073 | 0.9005 | 0.0226 |
+| Fusion a=0.25 | 19.6844 | 0.6076 | 0.9017 | 0.0223 |
+| Fusion a=0.50 | 19.7436 | 0.6052 | 0.9015 | 0.0221 |
+| RAFA3k no-old | 19.6282 | 0.5903 | 0.8976 | 0.0219 |
+| Adaptive fusion | 19.7251 | 0.5985 | 0.8995 | 0.0219 |
+
+推荐正文读法：
+
+- Fusion a=0.50 在 self 上 PSNR 最高，相对 ERRNet 提升 +0.1939 dB。
+- Fusion a=0.25 的 SSIM/NCC 略高，说明偏保守融合在自采数据上结构相关性更稳。
+- RAFA 单模型没有明显超过 ERRNet，说明真实自采场景仍需要 baseline protection。
+- Self-collected 结果是“方向一致的小幅提升”，不能写成显著大幅提升。
 
 还要放 1 行定性图：
 
@@ -432,6 +441,7 @@ Input | ERRNet | RAFA | Fusion | GT
 ```
 
 如果自采标注不是严格配准，需要在文本中说明 PSNR/SSIM 可能受拍摄误差影响，定性结果同样重要。
+当前 `fusion_qualitative_main.png` 已包含一行 self example，可作为正文图的第四行；不过提升较小，论文中建议把它称为“self-collected sanity check”，不要称为最强成功案例。
 
 ## 8. Discussion
 
@@ -526,6 +536,6 @@ Input | ERRNet | RAFA | Fusion | GT
 - 方法部分没有把 Fusion 作为最终方法。
 - 表格还没有最终 Fusion a=0.50。
 - 定性图还不是最终 `fusion_qualitative_main`。
-- 自采数据仍是 TODO。
+- 自采数据已经有 7 组裁剪 paired scenes，需要把 self 表格和 qualitative 第四行填入正文。
 
 下一步应按本大纲重写 LaTeX，而不是在旧文上小修小补。

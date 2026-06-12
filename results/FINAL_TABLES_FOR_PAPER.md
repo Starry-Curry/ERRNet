@@ -15,7 +15,7 @@ All values use the formal protocol: CEILNet/SIR2/OpenRR at native resolution and
 | Test | SIR2 Postcard | 179 | native | course test, real |
 | Test | SIR2 Wild | 101 | native | course test, real |
 | External | OpenRR val | 300 | native | external real benchmark |
-| Self | self-collected | >=5 | native unless documented resize | course required, pending |
+| Self | self-collected | 7 | 1:1 crops around reflection-bearing center regions | course required, approximate paired real scenes |
 
 ## Table 2. Course-Fair Results
 
@@ -85,13 +85,17 @@ Reading: BP-RAP RIC is not a universal replacement for ERRNet, but it improves S
 
 ## Table 8. Self-Collected Results
 
-Pending. Required methods:
+Seven self-collected paired scenes are cropped to the central reflection-bearing 1:1 region. The no-reflection reference is approximate because handheld capture can introduce slight alignment and exposure differences, so this table should be used as a supplementary real-scene check rather than the main quantitative claim.
 
 | Method | PSNR | SSIM | NCC | LMSE |
 | --- | ---: | ---: | ---: | ---: |
-| ERRNet baseline | TODO | TODO | TODO | TODO |
-| RAFA3k no-old | TODO | TODO | TODO | TODO |
-| Fusion a=0.50 | TODO | TODO | TODO | TODO |
+| ERRNet baseline | 19.5497 | 0.6073 | 0.9005 | 0.0226 |
+| Fusion a=0.25 | 19.6844 | 0.6076 | 0.9017 | 0.0223 |
+| Fusion a=0.50 | 19.7436 | 0.6052 | 0.9015 | 0.0221 |
+| RAFA3k no-old | 19.6282 | 0.5903 | 0.8976 | 0.0219 |
+| Adaptive fusion | 19.7251 | 0.5985 | 0.8995 | 0.0219 |
+
+Reading: Fusion a=0.50 gives the best self-collected PSNR (+0.1939 dB over ERRNet), while Fusion a=0.25 gives the best SSIM/NCC. The improvement is modest, consistent with the fact that self-collected pairs are not perfectly registered.
 
 ## Figure Caption Drafts
 
