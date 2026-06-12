@@ -167,6 +167,10 @@ def main() -> None:
 
     out_dir = Path(args.out_dir)
     figures_dir = Path(args.figures_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "scenes").mkdir(parents=True, exist_ok=True)
+    (out_dir / "columns").mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
     labels = ["Input", "ERRNet", "RAFA", f"Fusion a={args.alpha:.2f}", "GT"]
     rows_for_sheet: List[List[np.ndarray]] = []
     row_titles: List[str] = []
@@ -219,8 +223,6 @@ def main() -> None:
         scene_sheet.save(out_dir / "scenes" / f"{scene}_all_methods.png")
 
     contact = _draw_grid(rows_for_sheet, labels, row_titles, int(args.cell_width))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    figures_dir.mkdir(parents=True, exist_ok=True)
     contact_png = out_dir / "self_collected_all_methods.png"
     contact_pdf = out_dir / "self_collected_all_methods.pdf"
     contact.save(contact_png)
